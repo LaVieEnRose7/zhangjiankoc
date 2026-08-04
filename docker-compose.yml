@@ -1,0 +1,22 @@
+services:
+  zj-koc-workbench:
+    build: .
+    image: zj-koc-workbench:latest
+    container_name: zj-koc-workbench
+    restart: unless-stopped
+    ports:
+      - "4567:4567"
+    environment:
+      PORT: 4567
+      TZ: Asia/Shanghai
+      ZJ_DB_PATH: /app/server/data/zj_koc_v3.dat
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AUTO_TASK_ENABLED: ${AUTO_TASK_ENABLED:-1}
+      AUTO_TASK_TIME: ${AUTO_TASK_TIME:-07:00}
+      AUTO_TASK_BOOTSTRAP: ${AUTO_TASK_BOOTSTRAP:-1}
+    volumes:
+      - ./server/data:/app/server/data
+      - ./uploads:/app/uploads

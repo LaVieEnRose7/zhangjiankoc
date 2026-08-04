@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>杖剑传说 · KOC 内容机会决策与复盘工作台</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="badge" title="杖剑传说">
+          <img src="logo.png" class="logo-img" alt="杖剑传说">
+        </div>
+        <div class="brand-txt">
+          <h1>杖剑传说</h1>
+          <p>KOC 工作台</p>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <div class="nav-item" data-page="today">今日工作</div>
+        <div class="nav-item" data-page="campaigns">营销任务</div>
+        <div class="nav-item" data-page="opportunities">机会中心</div>
+        <div class="nav-item" data-page="gamenews">游戏快讯</div>
+        <div class="nav-sep"></div>
+        <div class="nav-item" data-page="cases">案例库</div>
+        <div class="nav-item" data-page="creators">创作者库</div>
+        <div class="nav-item" data-page="ops">经营分析</div>
+      </nav>
+      <div class="topbar-right">
+        <div class="user-chip" onclick="askUsername(true)">
+          <span class="avatar" id="userAvatar">?</span>
+          <span id="userName">未设置</span>
+        </div>
+        <span class="link-btn" onclick="openSettings()" title="系统设置">⚙️</span>
+      </div>
+    </header>
+    <main class="main" id="main"></main>
+  </div>
+  <div id="modals"></div>
+  <div id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

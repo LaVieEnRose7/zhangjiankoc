@@ -1,0 +1,27 @@
+{
+  "name": "zj-koc-workbench",
+  "version": "3.0.0",
+  "description": "杖剑传说 KOC 内容机会决策与复盘工作台 V3",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server/server.cjs",
+    "docker:build": "docker build -t zj-koc-workbench ."
+  },
+  "dependencies": {
+    "@vicons/ionicons5": "^0.13.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "naive-ui": "^2.44.1",
+    "sql.js": "^1.10.3",
+    "vue": "^3.5.13",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  }
+}
