@@ -34,6 +34,12 @@ git pull
 docker compose up -d --build
 ```
 
+如果使用 GitHub Actions 打好的镜像：
+```bash
+docker compose -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
 数据库默认挂载在：
 ```text
 server/data/zj_koc_v3.dat
