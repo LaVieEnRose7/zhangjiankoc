@@ -175,6 +175,8 @@
       </div>
       <n-input v-model:value="creativeText" type="textarea" :autosize="{ minRows: 10 }" />
       <template #foot>
+        <n-button secondary :disabled="!canCopyCreative" @click="copyCreative">复制内容</n-button>
+        <n-button secondary :loading="creativeLoading" :disabled="!creativeR" @click="regenCreative">{{ creativeLoading ? '生成中...' : '重新生成' }}</n-button>
         <n-button secondary @click="showCreative = false">关闭</n-button>
         <n-button type="primary" :loading="savingCreative" @click="createOpportunityFromCreative">{{ savingCreative ? '创建中...' : '进入机会中心' }}</n-button>
       </template>
@@ -234,6 +236,7 @@ const todos = ref({})
 const loading = ref(false)
 const error = ref('')
 const savingCreative = ref(false)
+const creativeLoading = ref(false)
 const savingFocus = ref(false)
 const savingHotspot = ref(false)
 const savingTodo = ref(false)
@@ -252,6 +255,7 @@ const prioritySubline = computed(() => {
 const showCreative = ref(false)
 const creativeR = ref(null), creativeText = ref('生成中…')
 const __gc = ref({ r: null, creative: '' })
+const canCopyCreative = computed(() => creativeText.value && !creativeText.value.startsWith('生成中'))
 const showFocus = ref(false), focusVer = ref(''), focusContent = ref('')
 const showHotspotForm = ref(false), showTodoForm = ref(false)
 
@@ -295,10 +299,41 @@ async function load() {
 async function genCreative(idx) {
   const r = recos.value[idx]; if (!r) return showToast('未找到推荐机会', true)
   creativeR.value = r; creativeText.value = '生成中…'; showCreative.value = true
+  await requestCreative(r)
+}
+
+async function regenCreative() {
+  if (!creativeR.value) return showToast('缺少推荐机会内容', true)
+  creativeText.value = '生成中…'
+  await requestCreative(creativeR.value)
+}
+
+async function requestCreative(r) {
+  creativeLoading.value = true
   try {
-    const resp = await apiPost('/today/recommendations/creative', { title: r.title, angle: r.angle, reason: r.reason, user: user.value })
+    const resp = await apiPost('/today/recommendations/creative', {
+      title: r.title,
+      angle: r.angle,
+      reason: r.reason,
+      user: user.value
+    }, { timeout: 180000 })
     creativeText.value = resp.text || ''; __gc.value = { r, creative: creativeText.value }
-  } catch (e) { creativeText.value = '生成失败：' + e.message }
+    showToast(resp.ok === false ? 'AI 不稳定，已生成规则兜底版本' : '创意内容已生成', resp.ok === false)
+  } catch (e) {
+    creativeText.value = `生成失败：${e.message}\n\n你可以点击“重新生成”，或先进入机会中心后再补充结论。`
+  } finally {
+    creativeLoading.value = false
+  }
+}
+
+async function copyCreative() {
+  if (!canCopyCreative.value) return
+  try {
+    await navigator.clipboard.writeText(creativeText.value)
+    showToast('已复制创意内容')
+  } catch (e) {
+    showToast('复制失败，请手动选中文本复制', true)
+  }
 }
 
 async function openAdjustFocus() {

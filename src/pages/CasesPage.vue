@@ -26,7 +26,6 @@
     <n-tabs v-model:value="tab" type="segment" animated class="page-tabs">
       <n-tab-pane name="all" tab="全部" />
       <n-tab-pane name="high" tab="高表现" />
-      <n-tab-pane name="verified" tab="已验证" />
       <n-tab-pane name="favorite" tab="收藏" />
     </n-tabs>
 
@@ -35,6 +34,9 @@
       <n-select v-model:value="filters.result" :options="resultFilterOptions" placeholder="效果-全部" clearable />
       <n-input class="q" v-model:value="filters.q" placeholder="搜索标题/创作者" clearable />
       <n-button size="small" secondary @click="filters = { platform: '', result: '', q: '' }">重置</n-button>
+      <n-button v-if="checkedCaseIds.length" size="small" type="error" secondary @click="batchDelete">
+        批量删除 {{ checkedCaseIds.length }}
+      </n-button>
     </div>
 
     <div v-if="loading" class="loading-card"><span>正在加载案例数据...</span><span class="spinner"></span></div>
@@ -61,17 +63,31 @@
             <div><b>{{ item.roi_d7 ?? '—' }}</b><span>ROI7</span></div>
           </div>
           <div class="case-mobile-actions" @click.stop>
-            <n-button size="small" secondary :disabled="busyId === item.id" @click="toggleVerified(item)">{{ item.is_verified ? '取消验证' : '验证' }}</n-button>
             <n-button size="small" secondary :disabled="busyId === item.id" @click="toggleFavorite(item)">{{ item.is_favorite ? '取消收藏' : '收藏' }}</n-button>
             <n-button size="small" type="error" secondary :disabled="busyId === item.id" @click="del(item.id)">删除</n-button>
           </div>
         </n-card>
       </div>
-      <n-data-table v-else class="data-table-card cases-table" :columns="caseColumns" :data="filtered" :bordered="false" :single-line="false" table-layout="fixed" />
+      <n-data-table
+        v-else
+        v-model:checked-row-keys="checkedCaseIds"
+        class="data-table-card cases-table"
+        :columns="caseColumns"
+        :data="filtered"
+        :bordered="false"
+        :single-line="false"
+        :row-key="row => row.id"
+        table-layout="fixed"
+      />
     </template>
 
     <Modal :show="showImport" @close="showImport = false">
       <template #head><h3>导入案例数据</h3></template>
+      <div class="form-row">
+        <label>导入类型</label>
+        <n-select v-model:value="importMode" :options="importModeOptions" />
+      </div>
+      <div class="hint" style="margin-bottom:12px">{{ importModeHint }}</div>
       <div class="form-row">
         <label>选择 Excel (.xlsx) 或 CSV 文件</label>
         <n-upload :default-upload="false" accept=".xlsx,.csv" :max="1" @change="handleImportChange">
@@ -112,7 +128,6 @@
             <div class="detail-tags">
               <StatusTag :text="selectedCase?.result || '一般'" />
               <StatusTag :text="selectedCase?.platform || '平台待定'" />
-              <StatusTag v-if="selectedCase?.is_verified" text="已验证" />
               <span v-if="selectedCase?.benchmark_met" class="tag green">达到基准</span>
               <span v-if="selectedCase?.is_favorite" class="tag orange">已收藏</span>
             </div>
@@ -139,7 +154,6 @@
           </div>
           <div class="detail-actions">
             <n-button secondary @click="openForm(selectedCase)">编辑</n-button>
-            <n-button type="primary" @click="toggleVerified(selectedCase)">{{ selectedCase?.is_verified ? '取消已验证' : '加入已验证' }}</n-button>
             <n-button secondary @click="toggleFavorite(selectedCase)">{{ selectedCase?.is_favorite ? '取消收藏' : '收藏' }}</n-button>
             <n-button type="error" secondary @click="del(selectedCase.id)">删除</n-button>
           </div>
@@ -158,19 +172,29 @@ import { getUser } from '../stores/app.js'
 import { fmt, pct } from '../utils/helpers.js'
 import Modal from '../components/Modal.vue'; import StatusTag from '../components/StatusTag.vue'; import EmptyState from '../components/EmptyState.vue'
 
-const tab = ref('all'), filters = ref({ platform: '', result: '', q: '' }), cases = ref([]), showImport = ref(false), importFile = ref(null)
+const tab = ref('all'), filters = ref({ platform: '', result: '', q: '' }), cases = ref([]), showImport = ref(false), importFile = ref(null), importMode = ref('cases')
 const loading = ref(false), error = ref(''), saving = ref(false), importing = ref(false), rejudging = ref(false), busyId = ref(null)
 const showForm = ref(false), editing = ref(null), form = ref({})
 const detailVisible = ref(false), selectedCase = ref(null)
+const checkedCaseIds = ref([])
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1280)
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
 const platformFilterOptions = platformOptions.filter(o => o.value !== '其他')
 const resultFilterOptions = ['爆款', '良好'].map(v => ({ label: v, value: v }))
+const importModeOptions = [
+  { label: '通用案例/发布数据', value: 'cases' },
+  { label: 'B站跑量数据', value: 'cases_bilibili' },
+  { label: '抖音跑量数据', value: 'cases_douyin' }
+]
+const importModeHint = computed(() => ({
+  cases: '用于导入已整理好的案例/发布数据；如果表格有“平台”列，会按表格平台入库。',
+  cases_bilibili: '用于导入 B站 跑量表；若表格缺少“平台”列，系统会自动按 B站 入库。',
+  cases_douyin: '用于导入 抖音 跑量表；若表格缺少“平台”列，系统会自动按 抖音 入库。'
+}[importMode.value] || ''))
 
 const filtered = computed(() => {
   let l = cases.value
   if (tab.value === 'high') l = l.filter(c => c.result === '爆款' || c.result === '良好')
-  if (tab.value === 'verified') l = l.filter(c => c.is_verified)
   if (tab.value === 'favorite') l = l.filter(c => c.is_favorite)
   if (filters.value.platform) l = l.filter(c => c.platform === filters.value.platform)
   if (filters.value.result) l = l.filter(c => c.result === filters.value.result)
@@ -180,12 +204,12 @@ const filtered = computed(() => {
 const isCompactCaseList = computed(() => viewportWidth.value < 760)
 const isMediumCaseTable = computed(() => viewportWidth.value < 1120)
 const caseActions = row => h(NSpace, { size: 6, wrap: false, class: 'case-action-group' }, () => [
-  h(NButton, { size: 'tiny', secondary: true, disabled: busyId.value === row.id, onClick: () => toggleVerified(row) }, () => row.is_verified ? '取消验证' : '验证'),
   h(NButton, { size: 'tiny', secondary: true, disabled: busyId.value === row.id, onClick: () => toggleFavorite(row) }, () => row.is_favorite ? '取消收藏' : '收藏'),
   h(NButton, { size: 'tiny', type: 'error', secondary: true, disabled: busyId.value === row.id, onClick: () => del(row.id) }, () => '删除')
 ])
 const caseColumns = computed(() => {
   const columns = [
+  { type: 'selection', width: 44 },
   {
     title: '标题',
     key: 'title',
@@ -209,11 +233,10 @@ const caseColumns = computed(() => {
     render: row => h('b', { style: { color: row.roi_d7 >= 0.8 ? 'var(--green)' : 'var(--red)' } }, row.roi_d7 != null ? row.roi_d7 : '—')
   },
   { title: '效果', key: 'result', width: 74, render: row => h(StatusTag, { text: row.result || '一般' }) },
-  { title: '验证', key: 'is_verified', width: 82, render: row => h(StatusTag, { text: row.is_verified ? '已验证' : '未验证' }) },
   {
     title: '操作',
     key: 'actions',
-    width: 172,
+    width: 118,
     render: caseActions
   }
   ]
@@ -274,18 +297,6 @@ async function toggleFavorite(c) {
   } catch (e) { showToast(e.message, true) }
   finally { busyId.value = null }
 }
-async function toggleVerified(c) {
-  if (!c) return
-  busyId.value = c.id
-  try {
-    const next = c.is_verified ? 0 : 1
-    await apiPut(`/cases/${c.id}`, { is_verified: next })
-    showToast(next ? '已加入已验证' : '已取消验证')
-    await load()
-    if (selectedCase.value?.id === c.id) selectedCase.value = cases.value.find(row => row.id === c.id) || selectedCase.value
-  } catch (e) { showToast(e.message, true) }
-  finally { busyId.value = null }
-}
 async function rejudgeCases() {
   rejudging.value = true
   try {
@@ -302,17 +313,34 @@ async function del(id) {
   try {
     await apiDelete(`/cases/${id}`)
     showToast('已删除')
+    checkedCaseIds.value = checkedCaseIds.value.filter(rowId => rowId !== id)
     if (selectedCase.value?.id === id) closeDetail()
     load()
   }
   catch (e) { showToast(e.message, true) }
   finally { busyId.value = null }
 }
+async function batchDelete() {
+  const ids = [...checkedCaseIds.value]
+  if (!ids.length) return
+  if (!confirm(`确认删除选中的 ${ids.length} 条案例？`)) return
+  busyId.value = 'batch'
+  try {
+    await Promise.all(ids.map(id => apiDelete(`/cases/${id}`)))
+    showToast(`已删除 ${ids.length} 条案例`)
+    if (selectedCase.value && ids.includes(selectedCase.value.id)) closeDetail()
+    checkedCaseIds.value = []
+    await load()
+  } catch (e) { showToast(e.message, true) }
+  finally { busyId.value = null }
+}
 async function doImport() {
   if (!importFile.value) return
   importing.value = true
   try {
-    await apiUpload('/import/cases', importFile.value)
+    const platform = importMode.value === 'cases_bilibili' ? 'B站' : importMode.value === 'cases_douyin' ? '抖音' : ''
+    const query = platform ? `?platform=${encodeURIComponent(platform)}` : ''
+    await apiUpload(`/import/cases${query}`, importFile.value)
     showImport.value = false
     importFile.value = null
     showToast('导入成功')

@@ -43,7 +43,7 @@
           <span>{{ col.items.length }}</span>
         </div>
         <div v-if="col.items.length" class="kanban-list">
-          <button v-for="o in col.items" :key="o.id" type="button" class="opp-card" @click="openDrawer(o.id)">
+          <div v-for="o in col.items" :key="o.id" class="opp-card" role="button" tabindex="0" @click="openDrawer(o.id)" @keyup.enter="openDrawer(o.id)">
             <span class="opp-title">{{ o.title }}</span>
             <span class="opp-meta">{{ o.campaign_name || '未关联任务' }}</span>
             <span class="opp-tags">
@@ -53,7 +53,10 @@
               <span v-else-if="o.rule_score != null" class="tag gray">规则 {{ o.rule_score }}</span>
             </span>
             <span v-if="o.direction || o.play_method" class="opp-desc">{{ o.play_method || o.direction }}</span>
-          </button>
+            <span class="opp-card-actions">
+              <n-button size="tiny" type="error" secondary @click.stop="deleteOpp(o.id)">删除</n-button>
+            </span>
+          </div>
         </div>
         <EmptyState v-else icon="check">暂无{{ col.status }}机会</EmptyState>
       </div>
@@ -142,6 +145,7 @@
           </div>
           <div style="display:flex;gap:8px;align-items:center">
             <n-button size="small" secondary @click="depositCase">💾 沉淀为案例</n-button>
+            <n-button size="small" type="error" secondary @click="deleteCurrentOpp">删除机会</n-button>
             <span class="x" @click="closeDrawer">&times;</span>
           </div>
         </div>
@@ -158,7 +162,7 @@
 
           <!-- ① 机会判断 -->
           <div class="sec-title">① 机会判断
-            <span><n-button size="small" type="primary" :loading="evalLoading" @click="evalOpp">{{ evalLoading ? '分析并填充中…' : 'AI 评估并填充' }}</n-button></span>
+            <span><n-button size="small" type="primary" :loading="evalLoading" @click="evalOpp">{{ evalLoading ? '分析并更新中…' : 'AI 评估并更新' }}</n-button></span>
           </div>
           <div v-if="drawer?.ai_analysis" class="ai-block">
             <div class="hd">AI 评估 · {{ drawer.ai_score }}分</div>{{ drawer.ai_analysis }}
@@ -170,43 +174,14 @@
             <n-button v-if="drawer?.status === '待判断'" size="small" type="error" secondary @click="setStatus('不采用')">✕ 不采用</n-button>
           </div>
 
-          <!-- ② 机会结论 -->
-          <div class="sec-title">② 机会结论
-            <span class="sec-actions">
-              <n-button size="small" secondary :loading="planLoading" @click="generateOpportunityPlan">{{ planLoading ? '生成中…' : 'AI 填充结论' }}</n-button>
-              <n-button size="small" type="primary" @click="saveOpportunityDetail">保存结论</n-button>
-            </span>
-          </div>
-          <div class="grid2">
-            <div class="fld"><label>机会名称</label><n-input v-model:value="drawer.title" /></div>
-            <div class="fld"><label>对应热点/节点</label><n-input v-model:value="drawer.hotspot_title" /></div>
-            <div class="fld"><label>推荐玩法</label><n-input v-model:value="drawer.play_method" /></div>
-            <div class="fld"><label>结合方式</label><n-input v-model:value="drawer.game_combo" /></div>
-            <div class="fld"><label>适合平台</label><n-input v-model:value="drawer.platform" /></div>
-            <div class="fld"><label>建议时效</label><n-input v-model:value="drawer.suggested_time" /></div>
-            <div class="fld"><label>预估成本</label><n-input-number v-model:value="drawer.cost" :min="0" style="width:100%" /></div>
-            <div class="fld"><label>风险等级</label><n-select v-model:value="drawer.risk_level" :options="riskOptions" /></div>
-            <div class="fld full"><label>一句话内容方向</label><n-input v-model:value="drawer.direction" type="textarea" :autosize="{ minRows: 2 }" /></div>
-            <div class="fld full"><label>风险备注</label><n-input v-model:value="drawer.risk_note" type="textarea" :autosize="{ minRows: 2 }" /></div>
-          </div>
-
-          <div class="sec-title">③ 执行记录</div>
+          <div class="sec-title">② 执行记录</div>
           <n-data-table v-if="executions.length" class="data-table-card inner" style="margin-bottom:14px" :columns="executionColumns" :data="executions" :bordered="false" :single-line="false" :pagination="false" />
-          <div class="card card-flat" style="padding:0;margin-bottom:14px">
-            <div class="form-grid">
-              <div class="form-row"><label>创作者</label><n-input v-model:value="execForm.creator_name" /></div>
-              <div class="form-row"><label>阶段</label><n-select v-model:value="execForm.stage" :options="stageOptions" /></div>
-              <div class="form-row"><label>计划日期</label><n-date-picker v-model:value="execPlannedDateValue" type="date" clearable @update:value="setExecDate('planned_date', $event)" /></div>
-              <div class="form-row"><label>发布日期</label><n-date-picker v-model:value="execPublishDateValue" type="date" clearable @update:value="setExecDate('publish_date', $event)" /></div>
-              <div class="form-row full"><label>发布链接</label><n-input v-model:value="execForm.publish_url" /></div>
-              <div class="form-row"><label>播放量</label><n-input-number v-model:value="execForm.play_count" :min="0" style="width:100%" /></div>
-              <div class="form-row"><label>ROI7</label><n-input-number v-model:value="execForm.roi_d7" :step="0.01" style="width:100%" /></div>
-              <div class="form-row full"><label>备注</label><n-input v-model:value="execForm.note" type="textarea" /></div>
-            </div>
-            <n-button type="primary" :loading="execSaving" @click="addExecution">{{ execSaving ? '添加中…' : '添加执行记录' }}</n-button>
+          <div class="sync-hint">
+            <b>执行数据后续由导入自动生成</b>
+            <span>跑量数据导入后，系统会按平台、标题、创作者和发布时间自动关联到机会，这里只保留归档后的执行结果。</span>
           </div>
 
-          <div class="sec-title">④ 状态与截止</div>
+          <div class="sec-title">③ 状态与截止</div>
           <div class="form-grid">
             <div class="form-row">
               <label>状态</label>
@@ -287,11 +262,7 @@ const drawerVisible = ref(false)
 const drawer = ref(null)
 const logs = ref([])
 const executions = ref([])
-const execSaving = ref(false)
-const execForm = ref({})
 const drawerDeadlineValue = ref(null)
-const execPlannedDateValue = ref(null)
-const execPublishDateValue = ref(null)
 
 // Template form
 const showTemplateForm = ref(false)
@@ -305,7 +276,6 @@ const oppFormCampId = ref('')
 
 // Eval loading
 const evalLoading = ref(false)
-const planLoading = ref(false)
 
 const counts = computed(() => ({
   current: opportunities.value.filter(o => OPP_CURRENT.includes(o.status)).length,
@@ -325,7 +295,6 @@ const dueOptions = [
   { label: '已逾期', value: 'overdue' },
   { label: '无截止', value: 'none' }
 ]
-const stageOptions = ['沟通中', '脚本确认', '制作中', '待发布', '已发布', '数据回收'].map(v => ({ label: v, value: v }))
 const campaignOptions = computed(() => campaigns.value.map(c => ({ label: c.name, value: c.id })))
 
 const platforms = computed(() => [...new Set(opportunities.value.map(o => o.platform).filter(Boolean))])
@@ -435,10 +404,6 @@ function dateValueToString(value) {
   return `${year}-${month}-${day}`
 }
 
-function setExecDate(field, value) {
-  execForm.value[field] = dateValueToString(value)
-}
-
 function syncDrawerDateValue() {
   drawerDeadlineValue.value = dateStringToValue(drawer.value?.deadline)
 }
@@ -479,7 +444,6 @@ async function openDrawer(id) {
     syncDrawerDateValue()
     logs.value = l || []
     executions.value = ex || []
-    resetExecForm()
     drawerVisible.value = true
   } catch (e) { showToast(e.message, true) }
 }
@@ -494,8 +458,19 @@ async function deleteOpp(id) {
   try {
     await apiDelete(`/opportunities/${id}`)
     showToast('已删除')
-    loadData()
+    if (drawer.value?.id === id) {
+      drawerVisible.value = false
+      drawer.value = null
+      logs.value = []
+      executions.value = []
+    }
+    await loadData()
   } catch (e) { showToast(e.message, true) }
+}
+
+async function deleteCurrentOpp() {
+  if (!drawer.value) return
+  await deleteOpp(drawer.value.id)
 }
 
 async function evalOpp() {
@@ -506,7 +481,7 @@ async function evalOpp() {
     const evalResult = await apiPost(`/opportunities/${id}/evaluate`, { user: getUser() }, { timeout: 180000 })
     const planResult = await generateOpportunityPlan({ silent: true, refresh: false })
     const usedRule = evalResult.mode === 'rule' || planResult?.mode === 'rule'
-    showToast(planResult?.message || evalResult.message || 'AI 评估与机会结论已生成', usedRule)
+    showToast(planResult?.message || evalResult.message || 'AI 评估已完成，机会字段已更新', usedRule)
     await openDrawer(id)
     await loadData()
   } catch (e) { showToast(e.message, true) }
@@ -516,20 +491,17 @@ async function evalOpp() {
 async function generateOpportunityPlan({ silent = false, refresh = true } = {}) {
   if (!drawer.value) return null
   const id = drawer.value.id
-  planLoading.value = true
   try {
     const r = await apiPost(`/opportunities/${id}/generate-plan`, { user: getUser() }, { timeout: 180000 })
     if (refresh) {
       await openDrawer(id)
       await loadData()
     }
-    if (!silent) showToast(r.message || '机会结论已由 AI 填充', r.mode === 'rule')
+    if (!silent) showToast(r.message || '机会字段已由 AI 更新', r.mode === 'rule')
     return r
   } catch (e) {
     if (!silent) showToast(e.message, true)
     throw e
-  } finally {
-    planLoading.value = false
   }
 }
 
@@ -550,29 +522,6 @@ async function saveState() {
   } catch (e) { showToast(e.message, true) }
 }
 
-async function saveOpportunityDetail() {
-  if (!drawer.value) return
-  try {
-    await apiPut(`/opportunities/${drawer.value.id}`, {
-      title: drawer.value.title,
-      direction: drawer.value.direction,
-      play_method: drawer.value.play_method,
-      game_combo: drawer.value.game_combo,
-      platform: drawer.value.platform,
-      suggested_time: drawer.value.suggested_time,
-      cost: drawer.value.cost,
-      risk_level: drawer.value.risk_level,
-      risk_note: drawer.value.risk_note,
-      deadline: drawer.value.deadline,
-      status: drawer.value.status
-    })
-    await apiPost(`/opportunities/${drawer.value.id}/logs`, { action: '保存机会结论', note: '更新机会名称/玩法/平台/时效等字段', user: getUser() })
-    showToast('机会结论已保存')
-    openDrawer(drawer.value.id)
-    loadData()
-  } catch (e) { showToast(e.message, true) }
-}
-
 async function addNote() {
   if (!drawer.value) return
   const note = prompt('备注内容：')
@@ -586,37 +535,9 @@ async function addNote() {
 async function depositCase() {
   if (!drawer.value) return
   try {
-    await apiPost(`/opportunities/${drawer.value.id}/deposit-case`, { is_verified: drawer.value.status === '已验证', note: drawer.value.decision || '', user: getUser() })
+    await apiPost(`/opportunities/${drawer.value.id}/deposit-case`, { note: drawer.value.decision || '', user: getUser() })
     showToast('已沉淀为案例')
   } catch (e) { showToast(e.message, true) }
-}
-
-function resetExecForm() {
-  execForm.value = {
-    creator_name: '',
-    stage: '沟通中',
-    planned_date: '',
-    publish_date: '',
-    publish_url: '',
-    play_count: null,
-    roi_d7: null,
-    note: ''
-  }
-  execPlannedDateValue.value = null
-  execPublishDateValue.value = null
-}
-
-async function addExecution() {
-  if (!drawer.value) return
-  if (!execForm.value.creator_name.trim()) return showToast('请输入创作者名称', true)
-  execSaving.value = true
-  try {
-    await apiPost('/executions', { ...execForm.value, opportunity_id: drawer.value.id, created_by: getUser() })
-    await apiPost(`/opportunities/${drawer.value.id}/logs`, { action: '新增执行记录', note: `${execForm.value.creator_name}：${execForm.value.stage}`, user: getUser() })
-    showToast('执行记录已添加')
-    openDrawer(drawer.value.id)
-  } catch (e) { showToast(e.message, true) }
-  finally { execSaving.value = false }
 }
 
 function openLink(url) { if (url) window.open(url, '_blank') }

@@ -972,6 +972,11 @@ td .row-link:hover { border-bottom-color:var(--ink); }
   gap:var(--sp-1);
   flex-wrap:wrap;
 }
+.opp-card-actions {
+  display:flex;
+  justify-content:flex-end;
+  margin-top:var(--sp-1);
+}
 
 /* -------- Detail Drawer -------- */
 .detail-drawer .drawer-head {
@@ -1171,6 +1176,19 @@ td .row-link:hover { border-bottom-color:var(--ink); }
   white-space: pre-wrap;
 }
 .ai-block .hd { color: var(--ink); font-weight: 700; margin-bottom: var(--sp-2); }
+.sync-hint {
+  display:grid;
+  gap:var(--sp-1);
+  margin-bottom:14px;
+  padding:var(--sp-3) var(--sp-4);
+  border:1px solid rgba(216,230,219,.9);
+  border-radius:var(--r-sm);
+  background:#fff;
+  color:var(--ink-faint);
+  font-size:13px;
+  line-height:1.7;
+}
+.sync-hint b { color:var(--ink); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
 .fld.full { grid-column: 1 / -1; }
 .fld label {

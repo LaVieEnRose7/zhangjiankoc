@@ -238,11 +238,12 @@ function computeLayers(items, dimension) {
   return out;
 }
 
-// ---------- 模块4 机会验证分析 ----------
-// 判定口径（已确认）：status 优先 + 规则兜底
-//   有 status 信号（已验证/不采用/已过期）→ 直接采信
-//   无信号 → 规则：ROI7≥0.8 且有播放→已验证；0.6≤ROI<0.8→部分验证；ROI<0.6 或 无有效播放→验证失败
-// 范围（已确认）：本期（周期+任务）内关联了内容的机会（取数自 items 的 opportunity_id）
+// ---------- 模块4 机会表现归因 ----------
+// 判定口径：只看本周期导入/归档后的内容表现，不依赖人工「已验证」状态。
+//   达标：ROI7≥0.8，或首日激活率≥3%，或总播放≥5万
+//   待复测：ROI7≥0.6，或首日激活率≥2%，或总播放≥5000
+//   未达标：有播放但转化/播放都未达复测线
+//   无数据：本周期无有效播放
 function computeOpp(db, items) {
   const oppIds = uniq(items.map(i => i.opportunity_id).filter(Boolean));
   const empty = { ready: true, summary: { verified: 0, partial: 0, failed: 0, none: 0, total: 0 }, groups: { verified: [], partial: [], failed: [], none: [] }, note: '本周期无关联机会的内容' };
@@ -252,7 +253,6 @@ function computeOpp(db, items) {
   const byOpp = {};
   for (const i of items) { if (!i.opportunity_id) continue; (byOpp[i.opportunity_id] = byOpp[i.opportunity_id] || []).push(i); }
   const groups = { verified: [], partial: [], failed: [], none: [] };
-  const MANUAL = ['已验证', '不采用', '已过期'];
   for (const o of oppRows) {
     const linkedAll = byOpp[o.id] || [];
     const linked = linkedAll.filter(i => i.play > 0);
@@ -266,14 +266,18 @@ function computeOpp(db, items) {
     const baiZan = linked.filter(i => i.like >= 100).length;
     const gaoQian = linked.filter(i => i.play >= 150000 || (i.roi && i.roi >= 1.0)).length;
     let verdict, reason;
-    if (MANUAL.includes(o.status)) {
-      if (o.status === '已验证') { verdict = 'verified'; reason = '机会状态已人工标记为「已验证」'; }
-      else { verdict = 'failed'; reason = `机会状态为「${o.status}」`; }
+    if (n === 0) {
+      verdict = 'none';
+      reason = '本周期关联内容无有效播放数据，无法判断表现';
+    } else if (avgRoi >= 0.8 || avgAct >= 3 || totalPlay >= 50000) {
+      verdict = 'verified';
+      reason = `表现达标：ROI7=${avgRoi ?? '暂无'}，激活率=${avgAct ?? '暂无'}%，总播放=${totalPlay}`;
+    } else if (avgRoi >= 0.6 || avgAct >= 2 || totalPlay >= 5000) {
+      verdict = 'partial';
+      reason = `需要复测：ROI7=${avgRoi ?? '暂无'}，激活率=${avgAct ?? '暂无'}%，总播放=${totalPlay}`;
     } else {
-      if (n === 0) { verdict = 'none'; reason = '本周期关联内容无有效播放数据，无法验证'; }
-      else if (avgRoi >= 0.8) { verdict = 'verified'; reason = `关联内容 ROI7=${avgRoi}≥0.8 且播放达标`; }
-      else if (avgRoi >= 0.6) { verdict = 'partial'; reason = `ROI7=${avgRoi} 介于 0.6~0.8，部分达标`; }
-      else { verdict = 'failed'; reason = `ROI7=${avgRoi}<0.6，未达验证基准`; }
+      verdict = 'failed';
+      reason = `未达标：ROI7=${avgRoi ?? '暂无'}，激活率=${avgAct ?? '暂无'}%，总播放=${totalPlay}`;
     }
     groups[verdict].push({
       id: o.id, title: o.title, status: o.status, platform: o.platform || '—', node: o.node || '—',
@@ -485,12 +489,12 @@ function computeResource(layers, opp, creator, overview) {
     }
   }
 
-  // —— 机会线并入验证/优化（部分验证→追测；验证失败→优化或放弃） ——
+  // —— 机会线并入复测/优化（待复测→追加样本；未达标→优化或放弃） ——
   for (const o of (opp.groups && opp.groups.partial) || []) {
-    push('verify', 'play', `机会「${o.title}」`, `追加 1-2 条内容完成验证（当前 ROI7=${o.avgRoi} 介于 0.6~0.8）`, `关联${o.validCount}条内容 · 总播${Math.round(o.totalPlay / 10000)}万 · ${o.reason}`, gripOfN(o.validCount), impactOfPlay(o.totalPlay));
+    push('verify', 'play', `机会「${o.title}」`, `追加 1-2 条内容做小样本复测，确认是否值得放量`, `关联${o.validCount}条内容 · 总播${Math.round(o.totalPlay / 10000)}万 · ${o.reason}`, gripOfN(o.validCount), impactOfPlay(o.totalPlay));
   }
   for (const o of (opp.groups && opp.groups.failed) || []) {
-    push('optimize', 'play', `机会「${o.title}」`, `验证未通过，回机会中心重判方向或调整玩法后再投`, `关联${o.validCount}条内容 · ${o.reason}`, gripOfN(o.validCount), impactOfPlay(o.totalPlay || 0));
+    push('optimize', 'play', `机会「${o.title}」`, `本周期表现未达标，回机会中心重判方向或调整玩法后再投`, `关联${o.validCount}条内容 · ${o.reason}`, gripOfN(o.validCount), impactOfPlay(o.totalPlay || 0));
   }
 
   // —— 创作者线 ——
@@ -526,7 +530,7 @@ function computeResource(layers, opp, creator, overview) {
 // ---------- 模块6 AI经营洞察（规则引擎部分） ----------
 // 已确认口径：
 //   触发：规则洞察随 analyze 即时返回；AI 洞察由前端按钮单独触发（/ops/insight-ai）
-//   覆盖：内容规律 / 平台规律 / 创作者规律 / 机会验证 / 异常信号 五类，每类≤2条
+//   覆盖：内容规律 / 平台规律 / 创作者规律 / 机会表现 / 异常信号 五类，每类≤2条
 //   可信度：高=样本≥5且差异≥50%；低=样本<3（自动标「需验证」）；其余=中
 function gradeConfidence(n, diffPct) {
   if (n < 3) return { confidence: '低', needsVerify: true };
@@ -606,21 +610,21 @@ function computeInsights(items, layers, overview, opp, creator, dataCenter) {
     }
   }
 
-  // ④ 机会验证规律：验证率 + 已验证机会的玩法共性
+  // ④ 机会表现规律：达标率 + 达标机会的玩法共性
   if (opp && opp.ready && opp.summary.total > 0) {
     const s = opp.summary;
     const vRate = round1(s.verified / s.total * 100);
     const vPMs = uniq(opp.groups.verified.map(o => o.play_method).filter(p => p && p !== '—'));
     const vContent = opp.groups.verified.reduce((sum, o) => sum + o.validCount, 0);
-    push('机会验证', `机会验证率 ${vRate}%（${s.verified}/${s.total}）`,
-      `本周期关联内容的机会中 ${s.verified} 个已验证${s.partial ? `、${s.partial} 个部分验证` : ''}${s.failed ? `、${s.failed} 个验证失败` : ''}${vPMs.length ? `；已验证机会集中在「${vPMs.join('、')}」玩法` : ''}`,
+    push('机会表现', `机会达标率 ${vRate}%（${s.verified}/${s.total}）`,
+      `本周期关联内容的机会中 ${s.verified} 个达标${s.partial ? `、${s.partial} 个待复测` : ''}${s.failed ? `、${s.failed} 个未达标` : ''}${vPMs.length ? `；达标机会集中在「${vPMs.join('、')}」玩法` : ''}`,
       `覆盖 ${vContent} 条有效内容`,
       vContent, uniq(items.filter(i => i.opportunity_id).map(i => i.creator_id).filter(Boolean)).length, vRate - 50);
     const partials = opp.groups.partial || [];
     if (partials.length) {
       const p0 = partials[0];
-      push('机会验证', `「${p0.title}」验证未完成，值得追加测试`,
-        `该机会 ROI7=${p0.avgRoi} 介于 0.6~0.8，方向可能成立但样本不足（${p0.validCount} 条），建议下周期追加 1-2 条内容完成验证`,
+      push('机会表现', `「${p0.title}」表现接近达标，值得追加测试`,
+        `该机会方向可能成立但样本不足（${p0.validCount} 条），建议下周期追加 1-2 条内容做复测`,
         `关联 ${p0.validCount} 条有效内容，总播放 ${p0.totalPlay}`,
         p0.validCount, 1, null);
     }

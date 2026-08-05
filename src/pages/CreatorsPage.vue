@@ -19,6 +19,9 @@
       <n-select v-model:value="filters.platform" :options="platformFilterOptions" placeholder="平台-全部" clearable />
       <n-input class="q" v-model:value="filters.q" placeholder="搜索名称/标签" clearable />
       <n-button size="small" secondary @click="filters = { platform: '', q: '' }">重置</n-button>
+      <n-button v-if="checkedCreatorIds.length" size="small" type="error" secondary @click="batchDelete">
+        批量删除 {{ checkedCreatorIds.length }}
+      </n-button>
     </div>
 
     <div v-if="loading" class="loading-card"><span>正在加载创作者数据...</span><span class="spinner"></span></div>
@@ -27,7 +30,16 @@
       <n-button size="small" secondary @click="load">重试</n-button>
     </div>
 
-    <n-data-table v-else class="data-table-card" :columns="creatorColumns" :data="filtered" :bordered="false" :single-line="false" />
+    <n-data-table
+      v-else
+      v-model:checked-row-keys="checkedCreatorIds"
+      class="data-table-card"
+      :columns="creatorColumns"
+      :data="filtered"
+      :bordered="false"
+      :single-line="false"
+      :row-key="row => row.id"
+    />
 
     <Modal :show="showForm" @close="showForm = false" wide>
       <template #head><h3>{{ editing ? '编辑' : '添加' }}创作者</h3></template>
@@ -37,7 +49,7 @@
         <div class="form-row"><label>状态</label><n-select v-model:value="form.status" :options="statusOptions" /></div>
         <div class="form-row"><label>粉丝量</label><n-input-number v-model:value="form.fans" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>平均播放</label><n-input-number v-model:value="form.avg_play" :min="0" style="width:100%" /></div>
-        <div class="form-row"><label>平均 ROI7</label><n-input-number v-model:value="form.avg_roi7" :step="0.01" style="width:100%" /></div>
+        <div class="form-row"><label>单条报价</label><n-input-number v-model:value="form.price" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>合作次数</label><n-input-number v-model:value="form.coop_count" :min="0" style="width:100%" /></div>
         <div class="form-row full"><label>擅长方向/标签</label><n-input v-model:value="form.categories" placeholder="逗号分隔" /></div>
         <div class="form-row full"><label>主页链接</label><n-input v-model:value="form.home_url" /></div>
@@ -76,7 +88,7 @@
           <div class="detail-metrics">
             <div><b>{{ fmt(selectedCreator?.fans) }}</b><span>粉丝</span></div>
             <div><b>{{ fmt(selectedCreator?.avg_play) }}</b><span>均播</span></div>
-            <div><b>{{ selectedCreator?.avg_roi7 ?? '—' }}</b><span>ROI7</span></div>
+            <div><b>{{ cpm(selectedCreator) }}</b><span>预估 CPM</span></div>
             <div><b>{{ selectedCreator?.coop_count ?? 0 }}</b><span>合作</span></div>
           </div>
           <div class="detail-section">
@@ -96,10 +108,10 @@
                 <div><b>{{ fmt(pubSummary.content_count) }}</b><span>发布内容</span></div>
                 <div><b>{{ fmt(pubSummary.total_play) }}</b><span>总播放</span></div>
                 <div><b>{{ fmt(pubSummary.avg_play) }}</b><span>平均播放</span></div>
-                <div><b>{{ pubSummary.avg_roi7 ?? '—' }}</b><span>平均 ROI7</span></div>
+                <div><b>{{ cpm(selectedCreator, pubSummary.avg_play) }}</b><span>预估 CPM</span></div>
                 <div><b>{{ pubSummary.avg_activation ?? '—' }}</b><span>平均激活率</span></div>
                 <div><b>{{ fmt(pubSummary.high_count) }}</b><span>高表现</span></div>
-                <div><b>{{ fmt(pubSummary.verified_count) }}</b><span>已验证</span></div>
+                <div><b>{{ fmt(pubSummary.benchmark_count) }}</b><span>达标内容</span></div>
                 <div><b>{{ fmtDate(pubSummary.latest_publish_date) }}</b><span>最近发布</span></div>
               </div>
               <div class="creator-feed" v-if="publishedItems.length">
@@ -113,7 +125,6 @@
                     <span v-if="item.activation_d1 != null">激活 {{ item.activation_d1 }}%</span>
                     <span v-if="item.roi_d7 != null">ROI7 {{ item.roi_d7 }}</span>
                     <StatusTag v-if="item.result" :text="item.result" />
-                    <StatusTag v-if="Number(item.is_verified) === 1" text="已验证" />
                     <n-button v-if="item.url" size="small" secondary @click="openLink(item.url)">原文</n-button>
                   </div>
                 </div>
@@ -159,6 +170,7 @@ import Modal from '../components/Modal.vue'; import StatusTag from '../component
 const tab = ref('all'), filters = ref({ platform: '', q: '' }), creators = ref([]), showForm = ref(false), editing = ref(null), form = ref({}), showImport = ref(false), importFile = ref(null)
 const loading = ref(false), error = ref(''), saving = ref(false), importing = ref(false), busyId = ref(null)
 const detailVisible = ref(false), selectedCreator = ref(null)
+const checkedCreatorIds = ref([])
 const publishedData = ref(null), publishedLoading = ref(false), publishedError = ref(''), rematching = ref(false)
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
 const platformFilterOptions = platformOptions.filter(o => o.value !== '其他')
@@ -175,6 +187,7 @@ const filtered = computed(() => {
 const pubSummary = computed(() => publishedData.value?.summary || {})
 const publishedItems = computed(() => publishedData.value?.items || [])
 const creatorColumns = computed(() => [
+  { type: 'selection', width: 44 },
   {
     title: '创作者',
     key: 'name',
@@ -185,7 +198,7 @@ const creatorColumns = computed(() => [
   { title: '粉丝', key: 'fans', width: 110, render: row => fmt(row.fans) },
   { title: '均播放', key: 'avg_play', width: 110, render: row => fmt(row.avg_play) },
   { title: '擅长方向', key: 'categories', minWidth: 180, render: row => h('span', { class: 'muted-cell' }, row.categories || '—') },
-  { title: 'ROI7均值', key: 'avg_roi7', width: 110, render: row => h('b', row.avg_roi7 != null ? row.avg_roi7 : '—') },
+  { title: '预估 CPM', key: 'cpm', width: 110, render: row => h('b', cpm(row)) },
   { title: '状态', key: 'status', width: 96, render: row => h(StatusTag, { text: row.status || '可合作' }) },
   {
     title: '操作',
@@ -211,7 +224,7 @@ async function load() {
 }
 function openForm(c = null) {
   editing.value = c
-  form.value = c ? { ...c } : { name: '', platform: 'B站', status: '可合作', fans: 0, avg_play: 0, avg_roi7: null, coop_count: 0, categories: '', home_url: '' }
+  form.value = c ? { ...c } : { name: '', platform: 'B站', status: '可合作', fans: 0, avg_play: 0, price: null, coop_count: 0, categories: '', home_url: '' }
   showForm.value = true
 }
 function openDetail(c) {
@@ -227,6 +240,12 @@ function closeDetail() {
 }
 function openLink(url) { if (url) window.open(url, '_blank') }
 function fmtDate(d) { return d ? String(d).slice(0, 10) : '—' }
+function cpm(row, playOverride = null) {
+  const price = Number(row?.price || 0)
+  const play = Number(playOverride ?? row?.avg_play ?? 0)
+  if (!price || !play) return '—'
+  return `¥${fmt(Math.round((price / play) * 1000))}`
+}
 async function loadPublished(id) {
   if (!id) return
   publishedLoading.value = true
@@ -273,8 +292,23 @@ async function del(id) {
   try {
     await apiDelete(`/creators/${id}`)
     showToast('已删除')
+    checkedCreatorIds.value = checkedCreatorIds.value.filter(rowId => rowId !== id)
     if (selectedCreator.value?.id === id) closeDetail()
     load()
+  } catch (e) { showToast(e.message, true) }
+  finally { busyId.value = null }
+}
+async function batchDelete() {
+  const ids = [...checkedCreatorIds.value]
+  if (!ids.length) return
+  if (!confirm(`确认删除选中的 ${ids.length} 位创作者？`)) return
+  busyId.value = 'batch'
+  try {
+    await Promise.all(ids.map(id => apiDelete(`/creators/${id}`)))
+    showToast(`已删除 ${ids.length} 位创作者`)
+    if (selectedCreator.value && ids.includes(selectedCreator.value.id)) closeDetail()
+    checkedCreatorIds.value = []
+    await load()
   } catch (e) { showToast(e.message, true) }
   finally { busyId.value = null }
 }

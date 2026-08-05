@@ -671,15 +671,37 @@ ${numbered}`;
  * 为「今日推荐机会」生成视频创意内容（标题 + 切入角度 + 脚本要点 + 建议话题 + 注意事项）。
  * 优先 Gemini；无 key 或失败时回退为规则模板，保证演示环境可用。
  */
-async function generateCreative({ title, angle, reason, creatorName, user } = {}) {
-  const sys = '你是《杖剑传说》手游的 KOC 内容创意策划，擅长把热点转化为可落地的短视频/图文创意。输出简洁、可执行、符合平台调性。';
+async function generateCreative({ title, angle, reason, creatorName, user, campaign } = {}) {
+  const focus = safeParse(campaign && campaign.focus_detail) || {};
+  const goals = safeParse(campaign && campaign.goals) || {};
+  const gameContext = [
+    `游戏名：${campaign?.game_name || '杖剑传说'}`,
+    campaign?.name ? `当前任务：${campaign.name}` : '',
+    campaign?.goal ? `任务目标：${campaign.goal}` : '',
+    campaign?.version_event ? `当前版本/活动：${campaign.version_event}` : '',
+    campaign?.focus_content ? `当前重点内容：${campaign.focus_content}` : '',
+    campaign?.content_directions ? `内容方向：${campaign.content_directions}` : '',
+    focus.selling_point ? `核心卖点：${focus.selling_point}` : '',
+    focus.audience ? `目标人群：${focus.audience}` : '',
+    goals.primary ? `主要转化目标：${goals.primary}` : ''
+  ].filter(Boolean).join('\n') || '游戏名：杖剑传说';
+  const sys = '你是《杖剑传说》手游的 KOC 内容创意策划，擅长把热点转化为可落地的短视频/图文创意。必须只基于已给出的游戏、任务和版本信息创作，禁止编造官方不存在的角色、系统、联动、剧情或活动。';
   const prompt = `请基于下面这条「今日推荐机会」产出一份可直接给创作者参考的视频创意方案。
+
+【游戏与运营上下文】
+${gameContext}
 
 【机会标题】${title || '（未命名）'}
 【系统建议结合角度】${angle || '—'}
 【系统推荐理由】${reason || '—'}
 ${creatorName ? `【目标创作者】${creatorName}` : ''}
 ${user ? `【操作人】${user}` : ''}
+
+【必须遵守】
+- 外部热点只能作为表达钩子或类比，不要写成《杖剑传说》官方内容。
+- 如果当前上下文没有明确联动、角色或版本名，不要自行添加具体联动名、角色名或版本活动。
+- 常规内容优先围绕游戏自身玩法、职业养成、剧情体验、社交互动、福利节点、版本节奏。
+- 输出要能直接复制给创作者执行，避免空泛营销话术。
 
 请按以下结构输出（用 Markdown，条目清晰，不要寒暄）：
 ## 创意标题
@@ -700,22 +722,22 @@ ${user ? `【操作人】${user}` : ''}
   try {
     const apiKey = getAiApiKey();
     if (!apiKey) throw new Error('NO_API_KEY');
-    const text = await callGemini(prompt, { system: sys });
+    const text = await callGemini(prompt, { system: sys, maxTokens: 4096, temperature: 0.35 });
     return { ok: true, source: 'ai', text: text.trim() };
   } catch (e) {
-    // 规则兜底
     const t = title || '热点内容';
     const a = angle || '结合游戏题材做内容';
     const fallback = `## 创意标题
-- 《${t}》还能这么玩？杖剑传说玩家看完破防了
-- 当《${t}》遇上杖剑传说：这波联动我打满分
+- 《${t}》还能这么玩？杖剑传说玩家看完有代入感
+- 这个热点别硬蹭，杖剑传说可以这样自然接住
 
 ## 切入角度
 - ${a}
+- 先用热点里的情绪或冲突做开场，再转到游戏自身的玩法、养成或版本重点，避免把热点写成游戏官方设定
 
 ## 脚本要点
 - 开头：用「${t}」的冲突/名场面钩住注意力
-- 中段：自然过渡到《杖剑传说》的对应玩法/职业/剧情
+- 中段：自然过渡到《杖剑传说》的真实玩法、职业养成、剧情体验或当前任务重点
 - 结尾：抛互动问题，引导评论区讨论
 
 ## 建议话题/标签
@@ -723,9 +745,10 @@ ${user ? `【操作人】${user}` : ''}
 
 ## 注意事项
 - 热点与游戏的结合需自然，避免生硬嫁接
+- 不要把外部热点、联动或角色写成游戏官方内容，除非当前营销任务已明确提供
 - 注意平台对商业内容的标注规范
 
-> ⚠️ 当前为规则模板（AI 暂不可用：${e.message}），可在配置 Gemini Key 后生成更贴合的创意。`;
+> 当前为规则模板（AI 暂不可用：${e.message}），可检查系统设置里的 API Key、Base URL 和模型名称后重新生成。`;
     return { ok: false, source: 'rule', text: fallback };
   }
 }

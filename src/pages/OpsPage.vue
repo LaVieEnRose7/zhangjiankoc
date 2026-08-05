@@ -3,7 +3,7 @@
     <div class="page-head">
       <div class="page-head-left">
         <h2>内容运营分析</h2>
-        <div class="sub">运营看板 · 内容分层 · 机会验证 · 运营建议</div>
+        <div class="sub">运营看板 · 内容分层 · 机会表现归因 · 运营建议</div>
       </div>
       <div class="page-head-actions">
         <n-button secondary @click="archiveCycle" :disabled="loading || !analysis">归档周期</n-button>
@@ -73,11 +73,11 @@
           </div>
 
           <div class="card">
-            <div class="sec-title">机会验证</div>
+            <div class="sec-title">机会表现归因</div>
             <div class="mini-stats">
-              <div><b>{{ oppSummary.verified || 0 }}</b><span>已验证</span></div>
-              <div><b>{{ oppSummary.partial || 0 }}</b><span>部分验证</span></div>
-              <div><b>{{ oppSummary.failed || 0 }}</b><span>失败</span></div>
+              <div><b>{{ oppSummary.verified || 0 }}</b><span>达标</span></div>
+              <div><b>{{ oppSummary.partial || 0 }}</b><span>待复测</span></div>
+              <div><b>{{ oppSummary.failed || 0 }}</b><span>未达标</span></div>
               <div><b>{{ oppSummary.none || 0 }}</b><span>无数据</span></div>
             </div>
             <div v-if="topOpps.length" class="compact-list">
@@ -86,7 +86,7 @@
                 <StatusTag :text="verdictText(o.verdict)" />
               </div>
             </div>
-            <div v-else class="hint">本周期暂无可验证机会</div>
+            <div v-else class="hint">本周期暂无可归因机会</div>
           </div>
         </div>
 
@@ -161,7 +161,7 @@
           <div class="sec-title">资源运营建议</div>
           <div class="resource-grid">
             <ResourceColumn title="放大" :rows="analysis.resource?.groups?.amplify || []" />
-            <ResourceColumn title="验证" :rows="analysis.resource?.groups?.verify || []" />
+            <ResourceColumn title="复测" :rows="analysis.resource?.groups?.verify || []" />
             <ResourceColumn title="优化" :rows="analysis.resource?.groups?.optimize || []" />
             <ResourceColumn title="暂停" :rows="analysis.resource?.groups?.pause || []" />
           </div>
@@ -389,7 +389,7 @@ function metricColor(value, target) {
 }
 
 function verdictText(v) {
-  return { verified: '已验证', partial: '部分验证', failed: '失败', none: '无数据' }[v] || v || '—'
+  return { verified: '达标', partial: '待复测', failed: '未达标', none: '无数据' }[v] || v || '—'
 }
 
 function queryString() {

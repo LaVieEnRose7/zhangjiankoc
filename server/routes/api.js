@@ -179,7 +179,7 @@ const TABLES = {
   hotspots: ['title','platform','category','heat','trend','source','source_label','url','description','tags','valid_until','relevance','risk_note','status','created_by'],
   creators: ['name','platform','home_url','fans','categories','avg_play','coop_count','avg_activation','avg_roi7','price','strengths','contact','status','notes','account_type','agency','content_type','coop_cycle','willingness','stability','is_new','good_play','good_role','style','forms','avg_cycle_days','cost_ceiling','bad_direction'],
   creator_accounts: ['creator_id','platform','account_name','home_url','fans','avg_play','avg_activation','avg_roi7','role','is_primary'],
-  cases: ['title','platform','url','creator_id','creator_name','campaign_id','campaign_name','game_name','content_type','marketing_node','hotspot','play_method','creator_type','topic_tags','raw_content','analysis_json','analysis_edited','play_count','like_count','comment_count','activation_d1','roi_d7','cost','result','summary','source','confirm_status','is_favorite','is_verified','is_reusable','linked_opportunity_id','benchmark_met','review_conclusion','note','publish_date','created_by','fans','copy','favorite_count','share_count','creator_platform_id'],
+  cases: ['title','platform','url','creator_id','creator_name','campaign_id','campaign_name','game_name','content_type','marketing_node','hotspot','play_method','creator_type','topic_tags','raw_content','analysis_json','analysis_edited','play_count','like_count','comment_count','activation_d1','roi_d7','cost','result','summary','source','confirm_status','is_favorite','is_reusable','linked_opportunity_id','benchmark_met','review_conclusion','note','publish_date','created_by','fans','copy','favorite_count','share_count','creator_platform_id'],
   executions: ['opportunity_id','creator_id','creator_name','stage','publish_url','publish_date','planned_date','exec_play_method','adjustment','fail_reason','play_count','like_count','comment_count','activation_d1','roi_d7','cost','income','note','revision_count','on_time','coop_rating','accuracy','agency_feedback','created_by'],
   experiences: ['content','category','keywords','boost','source_review_id','status','created_by','target_direction','platform','applicable_creator','data_basis','source_cycle','validation_count','confidence','is_effective','analysis_id'],
   todos: ['title','ref_type','ref_id','assignee','due_date','status','created_by'],
@@ -317,7 +317,7 @@ router.get('/creators/:id/published', (req, res) => {
     const platforms = new Set([creator.platform, ...accounts.map(a => a.platform)].filter(Boolean).map(String));
 
     const allCases = db.prepare(`SELECT id, title, url, platform, creator_id, creator_name, play_count, like_count, comment_count,
-        favorite_count, share_count, activation_d1, roi_d7, cost, result, source, is_verified, benchmark_met, publish_date
+        favorite_count, share_count, activation_d1, roi_d7, cost, result, source, benchmark_met, publish_date
       FROM cases ORDER BY (publish_date IS NULL), publish_date DESC, id DESC`).all();
     const caseRows = allCases.filter(v => {
       const direct = Number(v.creator_id) === id;
@@ -353,7 +353,7 @@ router.get('/creators/:id/published', (req, res) => {
       creator_name: v.creator_name, play_count: v.play_count, like_count: v.like_count,
       comment_count: v.comment_count, favorite_count: v.favorite_count, share_count: v.share_count,
       activation_d1: v.activation_d1, roi_d7: v.roi_d7, cost: v.cost,
-      publish_date: v.publish_date, result: v.result, is_verified: v.is_verified,
+      publish_date: v.publish_date, result: v.result,
       benchmark_met: v.benchmark_met,
       resultTag: resultTag(v.result), source: '案例库', deletable: false
     }));
@@ -378,7 +378,6 @@ router.get('/creators/:id/published', (req, res) => {
       avg_roi7: avg(roiRows),
       avg_activation: avg(activationRows),
       high_count: highCount,
-      verified_count: fromCases.filter(v => Number(v.is_verified) === 1).length,
       benchmark_count: fromCases.filter(v => Number(v.benchmark_met) === 1).length,
       latest_publish_date: latest
     };
@@ -566,9 +565,11 @@ router.get('/hotspots/:id/video', (req, res) => {
 /* ============ 今日推荐机会：生成创意内容（AI） ============ */
 router.post('/today/recommendations/creative', async (req, res) => {
   try {
+    const db = getDb();
     const { title, angle, reason, creatorName, user } = req.body || {};
     if (!title && !angle && !reason) return fail(res, '缺少机会内容', 400);
-    const r = await ai.generateCreative({ title, angle, reason, creatorName, user });
+    const campaign = rec.activeCampaigns(db)[0] || null;
+    const r = await ai.generateCreative({ title, angle, reason, creatorName, user, campaign });
     ok(res, r);
   } catch (e) { fail(res, e.message); }
 });
@@ -739,6 +740,9 @@ for (const [table, cols] of Object.entries(TABLES)) {
           avg_play: r.primary_avg_play ?? r.avg_play,
           avg_roi7: r.primary_avg_roi7 ?? r.avg_roi7
         }));
+      } else if (table === 'cases') {
+        const selectCols = ['id', ...cols, 'created_at'];
+        rows = db.prepare(`SELECT ${selectCols.join(',')} FROM cases ORDER BY id DESC`).all();
       } else {
         rows = db.prepare(`SELECT * FROM ${table} ORDER BY id DESC`).all();
       }
@@ -747,7 +751,13 @@ for (const [table, cols] of Object.entries(TABLES)) {
   });
 
   router.get(`/${table}/:id`, (req, res) => {
-    try { ok(res, getDb().prepare(`SELECT * FROM ${table} WHERE id=?`).get(req.params.id)); }
+    try {
+      if (table === 'cases') {
+        const selectCols = ['id', ...cols, 'created_at'];
+        return ok(res, getDb().prepare(`SELECT ${selectCols.join(',')} FROM cases WHERE id=?`).get(req.params.id));
+      }
+      ok(res, getDb().prepare(`SELECT * FROM ${table} WHERE id=?`).get(req.params.id));
+    }
     catch (e) { fail(res, e.message); }
   });
 
@@ -1358,7 +1368,6 @@ router.post('/opportunities/:id/deposit-case', (req, res) => {
     const sets = [], vals = [];
     if (req.body.review_conclusion !== undefined) { sets.push('review_conclusion=?'); vals.push(req.body.review_conclusion); }
     if (req.body.benchmark_met !== undefined) { sets.push('benchmark_met=?'); vals.push(req.body.benchmark_met ? 1 : 0); }
-    if (req.body.is_verified !== undefined) { sets.push('is_verified=?'); vals.push(req.body.is_verified ? 1 : 0); }
     if (req.body.note !== undefined) { sets.push('note=?'); vals.push(req.body.note); }
     if (sets.length) { vals.push(dep.id); db.prepare(`UPDATE cases SET ${sets.join(',')} WHERE id=?`).run(...vals); }
     ok(res, { id: dep.id });
@@ -1530,6 +1539,9 @@ router.post('/import/:type', upload.single('file'), (req, res) => {
       for (const [cn, en] of Object.entries(map.cols)) {
         if (row[cn] !== undefined) record[en] = row[cn];
         else if (row[en] !== undefined) record[en] = row[en]; // 兼容英文列名
+      }
+      if ((req.params.type === 'cases' || req.params.type === 'executions') && req.query.platform && !record.platform) {
+        record.platform = String(req.query.platform);
       }
       if (!record[map.required]) { skipped++; continue; }
       // CSV/xlsx 导入时日期常被推断为 Excel 序列数字（如 2026-07-29 → 46232.33），转回 YYYY-MM-DD 字符串
