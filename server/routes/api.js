@@ -336,6 +336,33 @@ router.get('/creators/phases', (req, res) => {
   catch (e) { fail(res, e.message); }
 });
 
+router.get('/creators/:id/phase-cost', (req, res) => {
+  try {
+    const creatorId = Number(req.params.id);
+    const campaignId = Number(req.query.campaign_id);
+    if (!creatorId || !campaignId) return fail(res, '缺少创作者或营销阶段', 400);
+    const row = getDb().prepare('SELECT paid_amount,note,updated_at FROM creator_phase_costs WHERE creator_id=? AND campaign_id=?').get(creatorId, campaignId);
+    ok(res, row || { paid_amount: null, note: '', updated_at: null });
+  } catch (e) { fail(res, e.message); }
+});
+
+router.put('/creators/:id/phase-cost', (req, res) => {
+  try {
+    const creatorId = Number(req.params.id);
+    const campaignId = Number(req.body && req.body.campaign_id);
+    const paidAmount = Number(req.body && req.body.paid_amount);
+    if (!creatorId || !campaignId) return fail(res, '缺少创作者或营销阶段', 400);
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) return fail(res, '阶段付费必须是非负数', 400);
+    const db = getDb();
+    db.prepare(`INSERT INTO creator_phase_costs (creator_id,campaign_id,paid_amount,note,updated_at)
+      VALUES (?,?,?,?,datetime('now','localtime'))
+      ON CONFLICT(creator_id,campaign_id) DO UPDATE SET paid_amount=excluded.paid_amount,note=excluded.note,updated_at=datetime('now','localtime')`)
+      .run(creatorId, campaignId, paidAmount, String(req.body.note || '').trim());
+    saveNow();
+    ok(res, { creator_id: creatorId, campaign_id: campaignId, paid_amount: paidAmount });
+  } catch (e) { fail(res, e.message); }
+});
+
 router.get('/creators/phase-performance', (req, res) => {
   try {
     const db = getDb();
@@ -360,15 +387,22 @@ router.get('/creators/phase-performance', (req, res) => {
       const nums = rows.map(x => Number(x[key])).filter(x => Number.isFinite(x));
       return nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length * 100) / 100 : null;
     };
-    const list = [...byCreator.entries()].map(([creator_id, rows]) => ({
-      creator_id,
-      content_count: rows.length,
-      total_play: rows.reduce((sum, x) => sum + (Number(x.play_count) || 0), 0),
-      avg_play: avg(rows, 'play_count'),
-      avg_activation: avg(rows.filter(x => x.activation_d1 != null), 'activation_d1'),
-      avg_roi7: avg(rows.filter(x => x.roi_d7 != null), 'roi_d7'),
-      high_count: rows.filter(x => x.result === '爆款' || x.result === '良好').length
-    }));
+    const list = [...byCreator.entries()].map(([creator_id, rows]) => {
+      const totalPlay = rows.reduce((sum, x) => sum + (Number(x.play_count) || 0), 0);
+      const costRow = phase.id === 'custom' ? null : db.prepare('SELECT paid_amount FROM creator_phase_costs WHERE creator_id=? AND campaign_id=?').get(creator_id, phase.id);
+      const paidAmount = costRow ? Number(costRow.paid_amount) : null;
+      return {
+        creator_id,
+        content_count: rows.length,
+        total_play: totalPlay,
+        avg_play: avg(rows, 'play_count'),
+        paid_amount: paidAmount,
+        cpm: paidAmount != null && totalPlay > 0 ? Math.round(paidAmount / totalPlay * 1000 * 100) / 100 : null,
+        avg_activation: avg(rows.filter(x => x.activation_d1 != null), 'activation_d1'),
+        avg_roi7: avg(rows.filter(x => x.roi_d7 != null), 'roi_d7'),
+        high_count: rows.filter(x => x.result === '爆款' || x.result === '良好').length
+      };
+    });
     ok(res, { phase, list, unmatched_count: cases.length - [...byCreator.values()].reduce((n, rows) => n + rows.length, 0) });
   } catch (e) { fail(res, e.message); }
 });
@@ -399,6 +433,53 @@ router.get('/creators/:id/insight', (req, res) => {
     const c = db.prepare('SELECT * FROM creators WHERE id=?').get(req.params.id);
     if (!c) return fail(res, '创作者不存在', 404);
     ok(res, creatorAnalysis.analyze(db, c));
+  } catch (e) { fail(res, e.message); }
+});
+
+function ruleCreatorStrengths(cases) {
+  const groups = new Map();
+  for (const item of cases) {
+    const tags = [item.play_method, item.content_type].filter(Boolean)
+      .flatMap(value => String(value).split(/[,，、/]/)).map(value => value.trim()).filter(Boolean);
+    for (const tag of tags) {
+      const row = groups.get(tag) || { tag, count: 0, play: 0, maxPlay: 0 };
+      const play = Number(item.play_count) || 0;
+      row.count++; row.play += play; row.maxPlay = Math.max(row.maxPlay, play);
+      groups.set(tag, row);
+    }
+  }
+  const ranked = [...groups.values()].map(row => ({ ...row, avgPlay: row.count ? Math.round(row.play / row.count) : 0 }))
+    .sort((a, b) => (b.count * 2 + Math.log10(b.avgPlay + 1)) - (a.count * 2 + Math.log10(a.avgPlay + 1)));
+  const top = ranked.slice(0, 5);
+  return {
+    categories: top.map(row => row.tag),
+    core_advantage: top.length ? `${top[0].tag}表现最突出：${top[0].count}条，均播${top[0].avgPlay}` : '案例尚未形成可统计的内容标签',
+    pending_direction: ranked.length > 1 && ranked[1].count === 1 ? `${ranked[1].tag}目前仅1条样本，建议继续验证` : '暂无',
+    evidence: top.slice(0, 3).map(row => `${row.tag}：${row.count}条 · 均播${row.avgPlay} · 最高播放${row.maxPlay}`)
+  };
+}
+
+router.post('/creators/:id/analyze-strengths', async (req, res) => {
+  try {
+    const db = getDb();
+    const creator = db.prepare(`SELECT c.*, COALESCE((SELECT platform FROM creator_accounts a WHERE a.creator_id=c.id ORDER BY is_primary DESC,id LIMIT 1),c.platform) platform
+      FROM creators c WHERE c.id=?`).get(req.params.id);
+    if (!creator) return fail(res, '创作者不存在', 404);
+    const start = String(req.body && req.body.start || '').slice(0, 10);
+    const end = String(req.body && req.body.end || '').slice(0, 10);
+    let rows = db.prepare(`SELECT title,content_type,play_method,hotspot,play_count,like_count,publish_date
+      FROM cases WHERE (creator_id=? OR (creator_id IS NULL AND creator_name=?)) ORDER BY publish_date DESC,id DESC`).all(creator.id, creator.name);
+    if (start) rows = rows.filter(row => row.publish_date && row.publish_date >= start);
+    if (end) rows = rows.filter(row => row.publish_date && row.publish_date <= end);
+    if (!rows.length) return fail(res, '该分析范围内没有已关联的案例内容', 400);
+    const fallback = ruleCreatorStrengths(rows);
+    try {
+      const result = await ai.analyzeCreatorStrengths({ creator, cases: rows, periodLabel: start ? `${start} 至 ${end || '今天'}` : '全部历史' });
+      ok(res, { ...result, mode: 'ai', sample_count: rows.length, message: 'AI 分析完成' });
+    } catch (e) {
+      const message = e.message === 'NO_API_KEY' ? '未配置 AI Key，已使用数据规则分析' : `AI 分析失败，已使用数据规则分析（${String(e.message).slice(0, 60)}）`;
+      ok(res, { ...fallback, mode: 'rule', sample_count: rows.length, message });
+    }
   } catch (e) { fail(res, e.message); }
 });
 
@@ -478,13 +559,20 @@ router.get('/creators/:id/published', (req, res) => {
     const activationRows = fromCases.map(v => v.activation_d1);
     const latest = items.find(v => v.publish_date)?.publish_date || null;
     const highCount = fromCases.filter(v => v.result === '爆款' || v.result === '良好').length;
+    const totalPlay = plays.map(num).filter(v => v != null).reduce((a, b) => a + b, 0);
+    const phaseCostRow = phase && phase.id !== 'custom'
+      ? db.prepare('SELECT paid_amount FROM creator_phase_costs WHERE creator_id=? AND campaign_id=?').get(id, phase.id)
+      : null;
+    const paidAmount = phaseCostRow ? Number(phaseCostRow.paid_amount) : null;
     const summary = {
       content_count: items.length,
       case_count: fromCases.length,
       manual_count: fromManual.length,
       execution_count: executions.length,
-      total_play: plays.map(num).filter(v => v != null).reduce((a, b) => a + b, 0),
+      total_play: totalPlay,
       avg_play: avg(plays),
+      paid_amount: paidAmount,
+      cpm: paidAmount != null && totalPlay > 0 ? Math.round(paidAmount / totalPlay * 1000 * 100) / 100 : null,
       avg_roi7: avg(roiRows),
       avg_activation: avg(activationRows),
       high_count: highCount,
@@ -519,6 +607,35 @@ router.delete('/opportunities/:id', (req, res) => {
 });
 
 // 内容经营分析：实时分析（第6页）
+router.get('/ops/creator-tier-rules', (req, res) => {
+  try {
+    const db = getDb();
+    const result = opsAnalysis.analyze(db, { start: '1900-01-01', end: '1900-01-01' });
+    ok(res, result.creator.rules);
+  } catch (e) { fail(res, e.message); }
+});
+
+router.put('/ops/creator-tier-rules', (req, res) => {
+  try {
+    const defaults = {
+      growth_min_published: 2, growth_min_total_play: 100000,
+      growth_min_avg_play: 50000, growth_max_cpm: 80,
+      cultivate_max_published: 2, cultivate_min_avg_play: 20000,
+      cultivate_max_cpm: 120, bottleneck_min_published: 2,
+      bottleneck_max_avg_play: 10000, bottleneck_min_cpm: 150
+    };
+    const rules = {};
+    for (const [key, fallback] of Object.entries(defaults)) {
+      const value = Number(req.body && req.body[key]);
+      rules[key] = Number.isFinite(value) && value >= 0 ? value : fallback;
+    }
+    const db = getDb();
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('creator_tier_rules', ?)").run(JSON.stringify(rules));
+    saveNow();
+    ok(res, rules);
+  } catch (e) { fail(res, e.message); }
+});
+
 router.get('/ops/analyze', (req, res) => {
   try {
     const db = getDb();
@@ -832,35 +949,50 @@ router.post('/cases/fix-source', (req, res) => {
   } catch (e) { fail(res, e.message); }
 });
 
-// 批量同步创作者平台账号粉丝量/昵称：优先联网抓取主页（B站/抖音），失败则兜底从已导入案例库反匹配
-router.post('/creator-accounts/sync-fans', async (req, res) => {
+// 批量同步改为后台任务，避免创作者较多时被浏览器或 K8s Ingress 判为请求超时。
+let syncFansJob = { status: 'idle', total: 0, done: 0, liveOk: 0, caseOk: 0, failCount: 0, startedAt: null, finishedAt: null, error: '' };
+async function runSyncFansJob() {
   try {
     const db = getDb();
     const rows = db.prepare('SELECT id, creator_id, platform, account_name, home_url, fans FROM creator_accounts').all();
-    let done = 0, liveOk = 0, caseOk = 0, failCount = 0;
-    const errors = [];
+    syncFansJob = { status: 'running', total: rows.length, done: 0, liveOk: 0, caseOk: 0, failCount: 0, startedAt: new Date().toISOString(), finishedAt: null, error: '' };
     for (const a of rows) {
-      // 每次迭代新建语句：避免跨 await 复用被 db.export() 关闭的预编译语句（"Statement closed"）
-      const upd = db.prepare('UPDATE creator_accounts SET fans=?, account_name=? WHERE id=?');
       let fans = a.fans || 0, name = a.account_name || '', src = null;
       if (a.home_url) {
-        const r = await fetchProfile(a.home_url);
-        if (r.ok && r.fans) {
-          fans = r.fans; if (!name || !name.trim()) name = r.name || name; src = 'live'; liveOk++;
+        const result = await fetchProfile(a.home_url);
+        if (result.ok && result.fans) {
+          fans = result.fans;
+          if (!name || !name.trim()) name = result.name || name;
+          src = 'live'; syncFansJob.liveOk++;
         }
       }
       if (!src) {
-        const cf = matchFansFromCases(db, a);
-        if (cf) { fans = cf; src = 'cases'; caseOk++; }
+        const caseFans = matchFansFromCases(db, a);
+        if (caseFans) { fans = caseFans; src = 'cases'; syncFansJob.caseOk++; }
       }
-      if (src) upd.run(fans, name || '', a.id);
-      else failCount++;
-      done++;
-      await new Promise(r => setTimeout(r, 300)); // 限速，防平台限流
+      if (src) db.prepare('UPDATE creator_accounts SET fans=?, account_name=? WHERE id=?').run(fans, name || '', a.id);
+      else syncFansJob.failCount++;
+      syncFansJob.done++;
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
-    ok(res, { total: rows.length, done, liveOk, caseOk, failCount, errors });
-  } catch (e) { console.error('SYNC-FANS ERR', e && e.stack || e); fail(res, e && e.message || 'sync error'); }
+    saveNow();
+    syncFansJob.status = 'completed';
+    syncFansJob.finishedAt = new Date().toISOString();
+  } catch (e) {
+    console.error('SYNC-FANS ERR', e && e.stack || e);
+    syncFansJob.status = 'failed';
+    syncFansJob.error = e && e.message || 'sync error';
+    syncFansJob.finishedAt = new Date().toISOString();
+  }
+}
+
+router.post('/creator-accounts/sync-fans', (req, res) => {
+  if (syncFansJob.status === 'running') return ok(res, syncFansJob);
+  runSyncFansJob();
+  ok(res, { ...syncFansJob, started: true });
 });
+
+router.get('/creator-accounts/sync-fans/status', (req, res) => ok(res, syncFansJob));
 
 // 根据创作者主页实时获取平台、昵称和粉丝数，供录入表单即时回填。
 router.post('/creators/fetch-profile', async (req, res) => {

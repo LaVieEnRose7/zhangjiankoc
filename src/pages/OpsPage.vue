@@ -110,6 +110,13 @@
       </div>
 
       <div v-if="tab === 'creators'">
+        <div class="card creator-tier-toolbar">
+          <div>
+            <div class="sec-title">创作者分层标准</div>
+            <p class="hint">按当前分析阶段内的发布条数、总播放、均播和 CPM 自动分类；CPM 未填写时只按播放表现判断。</p>
+          </div>
+          <n-button type="primary" secondary @click="openTierRules">修改分层标准</n-button>
+        </div>
         <div class="creator-summary-grid">
           <div class="creator-summary-card growth"><span>成长创作者</span><b>{{ creatorSummary.growth || 0 }}</b><small>表现成熟，可优先加码</small></div>
           <div class="creator-summary-card cultivate"><span>值得培养</span><b>{{ creatorSummary.cultivate || 0 }}</b><small>小样本潜力，继续测试</small></div>
@@ -204,6 +211,23 @@
       </div>
       <template #foot><n-button type="primary" @click="saveExp">保存</n-button></template>
     </Modal>
+
+    <Modal :show="showTierRules" @close="showTierRules = false" wide>
+      <template #head><h3>创作者分层标准设置</h3></template>
+      <div class="tier-rule-sections">
+        <section v-for="section in tierRuleSections" :key="section.key" :class="['tier-rule-section', section.key]">
+          <div><b>{{ section.title }}</b><p>{{ section.description }}</p></div>
+          <div class="tier-rule-fields">
+            <label v-for="field in section.fields" :key="field.key">
+              <span>{{ field.label }}</span>
+              <div><input v-model.number="tierRuleForm[field.key]" type="number" min="0" step="1" /><em>{{ field.unit }}</em></div>
+            </label>
+          </div>
+        </section>
+      </div>
+      <p class="hint">判定顺序：瓶颈 → 成长 → 值得培养 → 观察名单。同一创作者只会进入一个分类。</p>
+      <template #foot><n-button type="primary" :loading="savingTierRules" @click="saveTierRules">保存并重新分类</n-button></template>
+    </Modal>
   </div>
 </template>
 
@@ -294,6 +318,23 @@ const aiInsightMeta = ref({})
 const showExpForm = ref(false)
 const expEditing = ref(null)
 const expForm = ref({})
+const showTierRules = ref(false)
+const savingTierRules = ref(false)
+const tierRuleForm = ref({})
+const tierRuleSections = [
+  { key: 'growth', title: '成长创作者', description: '以下条件需同时满足', fields: [
+    { key: 'growth_min_published', label: '至少发布', unit: '条' }, { key: 'growth_min_total_play', label: '总播放不少于', unit: '次' },
+    { key: 'growth_min_avg_play', label: '均播不少于', unit: '次' }, { key: 'growth_max_cpm', label: 'CPM 不高于', unit: '元' }
+  ] },
+  { key: 'cultivate', title: '值得培养', description: '小样本且均播、成本达到培养线', fields: [
+    { key: 'cultivate_max_published', label: '最多发布', unit: '条' }, { key: 'cultivate_min_avg_play', label: '均播不少于', unit: '次' },
+    { key: 'cultivate_max_cpm', label: 'CPM 不高于', unit: '元' }
+  ] },
+  { key: 'bottleneck', title: '瓶颈创作者', description: '达到发布样本后，均播过低或 CPM 过高即进入', fields: [
+    { key: 'bottleneck_min_published', label: '至少发布', unit: '条' }, { key: 'bottleneck_max_avg_play', label: '均播不高于', unit: '次' },
+    { key: 'bottleneck_min_cpm', label: '或 CPM 不低于', unit: '元' }
+  ] }
+]
 
 const filters = ref({
   campaignId: '',
@@ -370,7 +411,8 @@ function phaseMonth(date) {
 async function selectAnalysisPhase(phase) {
   timeMode.value = 'phase'
   selectedPhaseId.value = phase.id
-  filters.value.campaignId = phase.id
+  // 阶段按发布日期边界统计。历史导入案例通常没有 campaign_id，不能再用任务 ID 过滤。
+  filters.value.campaignId = ''
   filters.value.start = phase.phase_start
   filters.value.end = phase.phase_end_exclusive ? previousDate(phase.phase_end_exclusive) : dateOffset(0)
   filters.value.cycleMode = 'task'
@@ -497,6 +539,27 @@ async function saveExp() {
     showToast('已保存')
     loadExperiences()
   } catch (e) { showToast(e.message, true) }
+}
+
+async function openTierRules() {
+  try {
+    const rules = await apiGet('/ops/creator-tier-rules')
+    tierRuleForm.value = { ...rules }
+    showTierRules.value = true
+  } catch (e) { showToast(e.message, true) }
+}
+
+async function saveTierRules() {
+  const values = Object.values(tierRuleForm.value)
+  if (values.some(value => value === '' || value == null || Number(value) < 0)) return showToast('请完整填写非负数值', true)
+  savingTierRules.value = true
+  try {
+    await apiPut('/ops/creator-tier-rules', tierRuleForm.value)
+    showTierRules.value = false
+    await loadDashboard()
+    showToast('分层标准已保存，创作者分类已更新')
+  } catch (e) { showToast(e.message, true) }
+  finally { savingTierRules.value = false }
 }
 
 async function del(id) {

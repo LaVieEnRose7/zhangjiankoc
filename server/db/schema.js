@@ -267,6 +267,17 @@ function createSchema(db) {
     value TEXT
   );
 
+  -- 创作者按营销阶段结算的实际付费，用阶段总播放自动计算 CPM
+  CREATE TABLE IF NOT EXISTS creator_phase_costs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_id INTEGER NOT NULL,
+    campaign_id INTEGER NOT NULL,
+    paid_amount REAL DEFAULT 0,
+    note TEXT,
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(creator_id, campaign_id)
+  );
+
   -- 今日热点每日快照：每日仅抓取一次 + 分析一次，结果落库持久化（跨重启仍读同一份）
   CREATE TABLE IF NOT EXISTS daily_hotspot_snapshot (
     snap_date TEXT PRIMARY KEY,             -- 日期 YYYY-MM-DD

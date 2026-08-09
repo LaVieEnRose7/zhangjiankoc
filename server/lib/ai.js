@@ -516,6 +516,7 @@ async function extractCase({ text, link }) {
   "borrowable": "可借鉴点（一句话，无则空字符串）",
   "risk_info": "风险信息（如版权/设定错误/夸大等，无则空字符串）"
 }
+
 【用户输入】
 ${input}`;
   const t = await callGemini(prompt);
@@ -525,6 +526,29 @@ ${input}`;
   ['play_count', 'like_count', 'comment_count', 'cost'].forEach(k => { if (j[k] != null) j[k] = Number(j[k]) || null; });
   ['activation_d1', 'roi_d7'].forEach(k => { if (j[k] != null) j[k] = Number(j[k]) || null; });
   return j;
+}
+
+/** 根据创作者已发布案例及真实表现，提炼擅长方向；仅返回建议，不直接写库。 */
+async function analyzeCreatorStrengths({ creator, cases, periodLabel }) {
+  const prompt = `你是游戏内容营销的数据分析师。请根据创作者已发布案例，提炼稳定且可执行的擅长方向。不要凭空推断，没有足够样本的方向只能列为待验证。
+
+【创作者】${creator.name}｜平台：${creator.platform || '未知'}
+【分析范围】${periodLabel || '全部历史'}
+【已有人工标签】${creator.categories || '无'}
+【发布案例】
+${(cases || []).slice(0, 50).map(c => `- ${c.title || '未命名'}｜内容类型:${c.content_type || '未知'}｜玩法:${c.play_method || '未知'}｜热点:${c.hotspot || '无'}｜播放:${Number(c.play_count) || 0}｜点赞:${Number(c.like_count) || 0}`).join('\n') || '无案例'}
+
+严格输出 JSON：
+{
+  "categories": ["2到5个简短擅长方向标签"],
+  "core_advantage": "80字以内，说明优势及数据依据",
+  "pending_direction": "50字以内的待验证方向，没有则写暂无",
+  "evidence": ["最多3条简短数据依据"]
+}`;
+  const text = await callGemini(prompt);
+  const json = extractJson(text);
+  if (!json || !Array.isArray(json.categories)) throw new Error('AI_PARSE_FAILED');
+  return json;
 }
 
 /** 模块4：自然语言→结构化营销重点（AI提取） */
@@ -753,4 +777,4 @@ ${user ? `【操作人】${user}` : ''}
   }
 }
 
-module.exports = { callGemini, evaluateOpportunity, generateReview, generateOpportunityDraft, generateOpportunityPlan, extractFocus, generateRuleSummary, extractCase, ruleExtractCase, getSetting, getAiConfig, discoverInsights, recommendOpportunities, generateCreative };
+module.exports = { callGemini, evaluateOpportunity, generateReview, generateOpportunityDraft, generateOpportunityPlan, extractFocus, generateRuleSummary, extractCase, ruleExtractCase, analyzeCreatorStrengths, getSetting, getAiConfig, discoverInsights, recommendOpportunities, generateCreative };

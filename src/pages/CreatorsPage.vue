@@ -4,7 +4,7 @@
       <div class="page-head-left"><h2>创作者库</h2><div class="sub">管理合作创作者 · 追踪表现数据</div></div>
       <div class="page-head-actions">
         <n-button secondary :loading="loading" @click="load">{{ loading ? '刷新中...' : '刷新' }}</n-button>
-        <n-button secondary :loading="syncingFans" @click="syncAllFans">{{ syncingFans ? '同步中...' : '同步全部粉丝' }}</n-button>
+        <n-button secondary :loading="syncingFans" @click="syncAllFans">{{ syncingFans ? `同步中 ${syncProgress.done}/${syncProgress.total || '…'}` : '同步全部粉丝' }}</n-button>
         <n-button type="primary" @click="openForm()">+ 添加创作者</n-button>
         <n-button secondary @click="showImport = true">导入名单</n-button>
       </div>
@@ -94,11 +94,14 @@
       <template #head><h3>{{ editing ? '编辑' : '添加' }}创作者</h3></template>
       <div class="form-grid">
         <div class="form-row full"><label>名称 *</label><n-input v-model:value="form.name" /></div>
-        <div class="form-row"><label>平台</label><n-select v-model:value="form.platform" :options="platformOptions" /></div>
+        <div class="form-row">
+          <label for="creator-platform">平台</label>
+          <select id="creator-platform" v-model="form.platform" class="creator-platform-select">
+            <option v-for="option in platformOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </div>
         <div class="form-row"><label>粉丝量（主页实时获取）</label><n-input-number v-model:value="form.fans" :min="0" :show-button="false" readonly style="width:100%" placeholder="填写主页链接后自动获取" /></div>
         <div class="form-row"><label>均播放量（案例自动统计）</label><n-input-number v-model:value="form.avg_play" :min="0" :show-button="false" readonly style="width:100%" placeholder="导入案例后自动计算" /></div>
-        <div class="form-row"><label>单条报价</label><n-input-number v-model:value="form.price" :min="0" style="width:100%" /></div>
-        <div class="form-row"><label>预估 CPM（手动填写）</label><n-input-number v-model:value="form.manual_cpm" :min="0" :step="1" style="width:100%" placeholder="留空则按报价和均播计算" /></div>
         <div class="form-row full"><label>擅长方向/标签</label><n-input v-model:value="form.categories" placeholder="逗号分隔" /></div>
         <div class="form-row full">
           <label>主页链接</label>
@@ -142,7 +145,7 @@
           <div class="detail-metrics">
             <div><b>{{ fmt(selectedCreator?.fans) }}</b><span>粉丝</span></div>
             <div><b>{{ fmt(publishedData ? pubSummary.avg_play : selectedCreator?.avg_play) }}</b><span>均播</span></div>
-            <div><b>{{ cpm(selectedCreator, publishedData ? pubSummary.avg_play : null) }}</b><span>预估 CPM</span></div>
+            <div><b>{{ phaseCpm(selectedCreator) }}</b><span>阶段 CPM</span></div>
           </div>
           <div class="detail-section">
             <div class="section-title-row">
@@ -161,7 +164,8 @@
                 <div><b>{{ fmt(pubSummary.content_count) }}</b><span>发布内容</span></div>
                 <div><b>{{ fmt(pubSummary.total_play) }}</b><span>总播放</span></div>
                 <div><b>{{ fmt(pubSummary.avg_play) }}</b><span>平均播放</span></div>
-                <div><b>{{ cpm(selectedCreator, pubSummary.avg_play) }}</b><span>预估 CPM</span></div>
+                <div><b>{{ pubSummary.cpm == null ? '—' : `¥${fmt(pubSummary.cpm)}` }}</b><span>阶段 CPM</span></div>
+                <div><b>{{ pubSummary.paid_amount == null ? '—' : `¥${fmt(pubSummary.paid_amount)}` }}</b><span>阶段付费</span></div>
                 <div><b>{{ pubSummary.avg_activation ?? '—' }}</b><span>平均激活率</span></div>
                 <div><b>{{ fmt(pubSummary.high_count) }}</b><span>高表现</span></div>
                 <div><b>{{ fmt(pubSummary.benchmark_count) }}</b><span>达标内容</span></div>
@@ -192,10 +196,12 @@
             </template>
           </div>
           <div class="detail-section">
-            <h3>合作画像</h3>
+            <div class="section-title-row">
+              <h3>合作画像</h3>
+              <n-button size="small" type="primary" secondary :loading="analyzingStrengths" @click="analyzeStrengths">AI 分析擅长方向</n-button>
+            </div>
             <p><b>擅长方向：</b>{{ selectedCreator?.categories || selectedCreator?.strengths || '—' }}</p>
             <p><b>内容类型：</b>{{ selectedCreator?.content_type || '—' }}</p>
-            <p><b>报价：</b>{{ selectedCreator?.price ? fmt(selectedCreator.price) : '—' }}</p>
             <p><b>主页：</b><n-button v-if="selectedCreator?.home_url" size="small" secondary @click="openLink(selectedCreator.home_url)">打开主页</n-button><span v-else>—</span></p>
           </div>
           <div class="detail-section">
@@ -203,12 +209,48 @@
             <p>{{ selectedCreator?.notes || selectedCreator?.bad_direction || '暂无备注' }}</p>
           </div>
           <div class="detail-actions">
+            <n-button v-if="timeMode === 'phase' && selectedPhaseId" type="primary" secondary @click="openPhaseCost(selectedCreator)">填写阶段付费</n-button>
             <n-button secondary @click="openForm(selectedCreator)">编辑</n-button>
             <n-button type="error" secondary @click="del(selectedCreator.id)">删除</n-button>
           </div>
         </div>
       </div>
     </template>
+
+    <Modal :show="showPhaseCost" @close="showPhaseCost = false">
+      <template #head><h3>填写阶段付费</h3></template>
+      <div class="phase-cost-summary">
+        <div><span>创作者</span><b>{{ phaseCostCreator?.name || '—' }}</b></div>
+        <div><span>营销阶段</span><b>{{ selectedPhase?.name || '—' }}</b></div>
+        <div><span>阶段总播放</span><b>{{ fmt(phaseMetric(phaseCostCreator).total_play) }}</b></div>
+      </div>
+      <div class="form-row"><label>本阶段实际付费金额（元）*</label><n-input-number v-model:value="phaseCostForm.paid_amount" :min="0" :precision="2" style="width:100%" placeholder="例如：5000" /></div>
+      <div class="form-row"><label>备注</label><n-input v-model:value="phaseCostForm.note" placeholder="例如：七月活动阶段合作费用" /></div>
+      <div class="phase-cpm-preview">
+        <span>预计 CPM</span><b>{{ phaseCostPreview }}</b>
+        <small>付费金额 ÷ 阶段总播放 × 1000</small>
+      </div>
+      <template #foot><n-button type="primary" :loading="savingPhaseCost" @click="savePhaseCost">保存并计算 CPM</n-button></template>
+    </Modal>
+
+    <Modal :show="showStrengthAnalysis" @close="showStrengthAnalysis = false" wide>
+      <template #head><h3>AI 擅长方向分析</h3></template>
+      <div class="strength-analysis-meta">
+        <span class="tag blue">{{ strengthAnalysis.mode === 'ai' ? 'AI 分析' : '规则分析' }}</span>
+        <span>分析样本 {{ strengthAnalysis.sample_count || 0 }} 条</span>
+        <span>{{ strengthAnalysis.message }}</span>
+      </div>
+      <div class="form-row full"><label>建议擅长方向（可修改后保存）</label><n-input v-model:value="strengthCategoriesDraft" placeholder="多个方向用逗号分隔" /></div>
+      <div class="strength-analysis-card"><b>核心优势</b><p>{{ strengthAnalysis.core_advantage || '—' }}</p></div>
+      <div class="strength-analysis-card"><b>待验证方向</b><p>{{ strengthAnalysis.pending_direction || '暂无' }}</p></div>
+      <div class="strength-evidence" v-if="strengthAnalysis.evidence?.length">
+        <b>数据依据</b><p v-for="item in strengthAnalysis.evidence" :key="item">{{ item }}</p>
+      </div>
+      <template #foot>
+        <n-button secondary @click="showStrengthAnalysis = false">暂不保存</n-button>
+        <n-button type="primary" :loading="savingStrengths" @click="saveStrengthAnalysis">确认保存</n-button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -225,14 +267,18 @@ const phases = ref([]), selectedPhaseId = ref(null), phasePerformance = ref(new 
 const timeMode = ref('phase'), customDateFrom = ref(''), customDateTo = ref('')
 const showPhaseForm = ref(false), savingPhase = ref(false), phaseForm = ref({ name: '', start_date: '' })
 const loading = ref(false), error = ref(''), saving = ref(false), importing = ref(false), busyId = ref(null), fetchingProfile = ref(false), syncingFans = ref(false)
+const syncProgress = ref({ done: 0, total: 0 })
 const detailVisible = ref(false), selectedCreator = ref(null)
 const checkedCreatorIds = ref([])
 const creatorPage = ref(1), pageSize = 15
 const publishedData = ref(null), publishedLoading = ref(false), publishedError = ref(''), rematching = ref(false)
+const showPhaseCost = ref(false), savingPhaseCost = ref(false), phaseCostCreator = ref(null), phaseCostForm = ref({ paid_amount: null, note: '' })
+const showStrengthAnalysis = ref(false), analyzingStrengths = ref(false), savingStrengths = ref(false)
+const strengthAnalysis = ref({}), strengthCategoriesDraft = ref('')
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
 const platformFilterOptions = platformOptions.filter(o => o.value !== '其他')
 const selectedPhase = computed(() => phases.value.find(p => Number(p.id) === Number(selectedPhaseId.value)) || null)
-const phaseMetric = row => phasePerformance.value.get(Number(row.id)) || { content_count: 0, total_play: 0, avg_play: 0, avg_activation: null, avg_roi7: null, high_count: 0 }
+const phaseMetric = row => phasePerformance.value.get(Number(row?.id)) || { content_count: 0, total_play: 0, avg_play: 0, paid_amount: null, cpm: null, avg_activation: null, avg_roi7: null, high_count: 0 }
 
 const filtered = computed(() => {
   let l = creators.value
@@ -267,7 +313,7 @@ const creatorColumns = computed(() => [
   { title: '平均 ROI', key: 'phase_roi', width: 86, render: row => phaseMetric(row).avg_roi7 ?? '—' },
   { title: '高表现', key: 'phase_high', width: 76, render: row => phaseMetric(row).high_count },
   { title: '擅长方向', key: 'categories', minWidth: 180, render: row => h('span', { class: 'muted-cell' }, row.categories || '—') },
-  { title: '预估 CPM', key: 'cpm', width: 110, render: row => h('b', cpm(row, selectedPhaseId.value ? phaseMetric(row).avg_play : null)) },
+  { title: '阶段 CPM', key: 'cpm', width: 120, render: row => h(NButton, { size: 'small', text: true, type: 'primary', disabled: timeMode.value !== 'phase', onClick: () => openPhaseCost(row) }, () => phaseCpm(row)) },
   {
     title: '操作',
     key: 'actions',
@@ -359,15 +405,24 @@ async function savePhase() {
 async function syncAllFans() {
   syncingFans.value = true
   try {
-    const r = await apiPost('/creator-accounts/sync-fans', {})
-    showToast(`同步完成：主页获取 ${r.liveOk || 0} 位，案例回填 ${r.caseOk || 0} 位，失败 ${r.failCount || 0} 位`, (r.failCount || 0) > 0)
+    let r = await apiPost('/creator-accounts/sync-fans', {})
+    syncProgress.value = { done: r.done || 0, total: r.total || 0 }
+    while (r.status === 'running') {
+      await new Promise(resolve => setTimeout(resolve, 1200))
+      r = await apiGet('/creator-accounts/sync-fans/status')
+      syncProgress.value = { done: r.done || 0, total: r.total || 0 }
+    }
+    if (r.status === 'failed') throw new Error(r.error || '粉丝同步失败')
+    showToast(`同步完成：主页获取 ${r.liveOk || 0} 位，案例回填 ${r.caseOk || 0} 位，失败 ${r.failCount || 0} 位`, false)
     await load()
   } catch (e) { showToast(e.message, true) }
-  finally { syncingFans.value = false }
+  finally { syncingFans.value = false; syncProgress.value = { done: 0, total: 0 } }
 }
 function openForm(c = null) {
   editing.value = c
-  form.value = c ? { ...c } : { name: '', platform: 'B站', fans: 0, avg_play: 0, price: null, manual_cpm: null, categories: '', home_url: '' }
+  form.value = c
+    ? { ...c, platform: c.primary_platform || c.platform || 'B站' }
+    : { name: '', platform: 'B站', fans: 0, avg_play: 0, categories: '', home_url: '' }
   showForm.value = true
 }
 async function fetchProfile() {
@@ -396,13 +451,74 @@ function closeDetail() {
 }
 function openLink(url) { if (url) window.open(url, '_blank') }
 function fmtDate(d) { return d ? String(d).slice(0, 10) : '—' }
-function cpm(row, playOverride = null) {
-  const manual = Number(row?.manual_cpm)
-  if (Number.isFinite(manual) && manual > 0) return `¥${fmt(manual)}`
-  const price = Number(row?.price || 0)
-  const play = Number(playOverride ?? row?.avg_play ?? 0)
-  if (!price || !play) return '—'
-  return `¥${fmt(Math.round((price / play) * 1000))}`
+function dateBefore(value) {
+  const date = new Date(`${value}T00:00:00`)
+  date.setDate(date.getDate() - 1)
+  return date.toISOString().slice(0, 10)
+}
+async function analyzeStrengths() {
+  if (!selectedCreator.value) return
+  analyzingStrengths.value = true
+  try {
+    const range = timeMode.value === 'custom'
+      ? { start: customDateFrom.value, end: customDateTo.value }
+      : { start: selectedPhase.value?.phase_start || '', end: selectedPhase.value?.phase_end_exclusive ? dateBefore(selectedPhase.value.phase_end_exclusive) : '' }
+    const result = await apiPost(`/creators/${selectedCreator.value.id}/analyze-strengths`, range, { timeout: 120000 })
+    strengthAnalysis.value = result
+    strengthCategoriesDraft.value = (result.categories || []).join('，')
+    showStrengthAnalysis.value = true
+  } catch (e) { showToast(e.message, true) }
+  finally { analyzingStrengths.value = false }
+}
+async function saveStrengthAnalysis() {
+  const categories = String(strengthCategoriesDraft.value || '').trim()
+  if (!categories) return showToast('请至少保留一个擅长方向', true)
+  const creatorId = Number(selectedCreator.value?.id)
+  if (!creatorId) return showToast('当前创作者信息已失效，请关闭抽屉后重试', true)
+  savingStrengths.value = true
+  try {
+    await apiPut(`/creators/${creatorId}`, { categories })
+    const listRow = creators.value.find(row => Number(row.id) === creatorId)
+    if (listRow) listRow.categories = categories
+    if (selectedCreator.value && Number(selectedCreator.value.id) === creatorId) {
+      selectedCreator.value = { ...selectedCreator.value, categories }
+    }
+    showStrengthAnalysis.value = false
+    showToast('擅长方向已确认保存')
+  } catch (e) { showToast(e.message, true) }
+  finally { savingStrengths.value = false }
+}
+function phaseCpm(row) {
+  const value = phaseMetric(row).cpm
+  return value == null ? '填写付费' : `¥${fmt(value)}`
+}
+const phaseCostPreview = computed(() => {
+  const amount = Number(phaseCostForm.value.paid_amount)
+  const play = Number(phaseMetric(phaseCostCreator.value).total_play)
+  if (!Number.isFinite(amount) || amount < 0 || !play) return '等待播放数据'
+  return `¥${fmt(Math.round(amount / play * 1000 * 100) / 100)}`
+})
+async function openPhaseCost(creator) {
+  if (!creator || timeMode.value !== 'phase' || !selectedPhaseId.value) return showToast('请先选择营销任务阶段', true)
+  phaseCostCreator.value = creator
+  phaseCostForm.value = { paid_amount: phaseMetric(creator).paid_amount, note: '' }
+  try {
+    const saved = await apiGet(`/creators/${creator.id}/phase-cost?campaign_id=${selectedPhaseId.value}`)
+    phaseCostForm.value = { paid_amount: saved.paid_amount, note: saved.note || '' }
+    showPhaseCost.value = true
+  } catch (e) { showToast(e.message, true) }
+}
+async function savePhaseCost() {
+  if (phaseCostForm.value.paid_amount == null || Number(phaseCostForm.value.paid_amount) < 0) return showToast('请填写阶段付费金额', true)
+  savingPhaseCost.value = true
+  try {
+    await apiPut(`/creators/${phaseCostCreator.value.id}/phase-cost`, { ...phaseCostForm.value, campaign_id: selectedPhaseId.value })
+    await loadPhasePerformance()
+    if (detailVisible.value && selectedCreator.value) await loadPublished(selectedCreator.value.id)
+    showPhaseCost.value = false
+    showToast('阶段付费已保存，CPM 已重新计算')
+  } catch (e) { showToast(e.message, true) }
+  finally { savingPhaseCost.value = false }
 }
 async function loadPublished(id) {
   if (!id) return

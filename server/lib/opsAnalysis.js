@@ -325,40 +325,51 @@ function computeOpp(db, items) {
 //   值得培养：新人，或样本少但趋势正向(上升/平稳)且适配当前任务
 //   成长：近期上升 且 本周期 ROI7≥0.8（无瓶颈信号）
 //   其余 → 观察
-function classifyCreator(period, eng, benchmark) {
-  const signals = (eng.trend && eng.trend.signals) || [];
-  const hasQualityDrop = signals.some(s => s.type === 'quality_drop');
-  const hasRepeat = signals.some(s => s.type === 'repeat');
-  const isNew = !!eng.creator.is_new;
+const DEFAULT_CREATOR_TIER_RULES = Object.freeze({
+  growth_min_published: 2, growth_min_total_play: 100000,
+  growth_min_avg_play: 50000, growth_max_cpm: 80,
+  cultivate_max_published: 2, cultivate_min_avg_play: 20000,
+  cultivate_max_cpm: 120, bottleneck_min_published: 2,
+  bottleneck_max_avg_play: 10000, bottleneck_min_cpm: 150
+});
+
+function getCreatorTierRules(db) {
+  const saved = parseJson(getSetting(db, 'creator_tier_rules', ''), {});
+  return Object.fromEntries(Object.entries(DEFAULT_CREATOR_TIER_RULES).map(([key, fallback]) => {
+    const value = Number(saved[key]);
+    return [key, Number.isFinite(value) && value >= 0 ? value : fallback];
+  }));
+}
+
+function cpmWithin(cpm, limit) { return cpm == null || cpm <= limit; }
+
+function classifyCreator(period, rules) {
   const pub = period.published;
   const totalPlay = period.totalPlay || 0;
+  const avgPlay = period.avgPlay || 0;
   const cpm = period.cpm;
-  const highCpm = cpm != null && benchmark.avgCpm > 0 && cpm > benchmark.avgCpm * 1.5;
-  const lowPlay = pub >= 2 && benchmark.avgCreatorPlay > 0 && totalPlay < benchmark.avgCreatorPlay * 0.5;
-  const bottleneckByPerf = hasQualityDrop || hasRepeat || highCpm || lowPlay;
-  if (bottleneckByPerf) {
+  const highCpm = cpm != null && cpm >= rules.bottleneck_min_cpm;
+  const lowPlay = pub >= rules.bottleneck_min_published && avgPlay <= rules.bottleneck_max_avg_play;
+  if (pub >= rules.bottleneck_min_published && (highCpm || lowPlay)) {
     const bits = [];
-    if (hasQualityDrop) bits.push('内容质量下降');
-    if (hasRepeat) bits.push('素材重复');
-    if (highCpm) bits.push(`CPM ¥${cpm} 高于整体 ¥${benchmark.avgCpm}`);
-    if (lowPlay) bits.push(`发布 ${pub} 条但总播放 ${Math.round(totalPlay)} 偏低`);
+    if (highCpm) bits.push(`CPM ¥${cpm} 达到瓶颈线 ¥${rules.bottleneck_min_cpm}`);
+    if (lowPlay) bits.push(`均播 ${Math.round(avgPlay)} 不高于 ${rules.bottleneck_max_avg_play}`);
     return { cls: 'bottleneck', reason: bits.join('；') || '综合表现偏弱' };
   }
-  const efficient = cpm != null && benchmark.avgCpm > 0 && cpm <= benchmark.avgCpm;
-  const strongPlay = benchmark.avgCreatorPlay > 0 && totalPlay >= benchmark.avgCreatorPlay;
-  if (pub >= 2 && strongPlay && (efficient || cpm == null)) {
-    return { cls: 'growth', reason: `发布 ${pub} 条、总播放 ${Math.round(totalPlay)} 达到整体水平，CPM ${cpm == null ? '待补充' : '¥' + cpm}` };
+  if (pub >= rules.growth_min_published && totalPlay >= rules.growth_min_total_play && avgPlay >= rules.growth_min_avg_play && cpmWithin(cpm, rules.growth_max_cpm)) {
+    return { cls: 'growth', reason: `发布 ${pub} 条 · 总播 ${Math.round(totalPlay)} · 均播 ${Math.round(avgPlay)} · CPM ${cpm == null ? '待补充' : '¥' + cpm}` };
   }
-  if (isNew || (pub <= 2 && (efficient || strongPlay))) {
-    return { cls: 'cultivate', reason: `样本 ${pub} 条，${efficient ? 'CPM 效率较好' : '播放潜力较好'}，建议继续小规模培养` };
+  if (pub > 0 && pub <= rules.cultivate_max_published && avgPlay >= rules.cultivate_min_avg_play && cpmWithin(cpm, rules.cultivate_max_cpm)) {
+    return { cls: 'cultivate', reason: `样本 ${pub} 条 · 均播 ${Math.round(avgPlay)} · CPM ${cpm == null ? '待补充' : '¥' + cpm}，达到培养线` };
   }
-  return { cls: 'watch', reason: `发布 ${pub} 条、总播放 ${Math.round(totalPlay)}，CPM ${cpm == null ? '待补充' : '¥' + cpm}，继续观察` };
+  return { cls: 'watch', reason: `发布 ${pub} 条 · 总播 ${Math.round(totalPlay)} · 均播 ${Math.round(avgPlay)} · CPM ${cpm == null ? '待补充' : '¥' + cpm}` };
 }
 
 function computeCreator(db, items) {
+  const rules = getCreatorTierRules(db);
   const creatorIds = uniq(items.map(i => i.creator_id).filter(Boolean));
   const empty = { ready: true, summary: { growth: 0, bottleneck: 0, cultivate: 0, watch: 0, total: 0 }, groups: { growth: [], bottleneck: [], cultivate: [], watch: [] }, note: '本周期无关联创作者的内容' };
-  if (!creatorIds.length) return empty;
+  if (!creatorIds.length) return { ...empty, rules };
   const q = creatorIds.map(() => '?').join(',');
   const creatorRows = db.prepare(`SELECT * FROM creators WHERE id IN (${q})`).all(...creatorIds);
   const byC = {};
@@ -391,7 +402,7 @@ function computeCreator(db, items) {
     }
     const period = { published, totalPlay, totalCost, cpm, avgRoi: round1(mean(rois)), avgAct: round1(mean(acts)), trend: periodTrend, roiCount: rois.length, avgPlay: published ? totalPlay / published : 0 };
     const eng = creatorAnalysis.analyze(db, cr);
-    const { cls, reason } = classifyCreator(period, eng, benchmark);
+    const { cls, reason } = classifyCreator(period, rules);
     const signals = ((eng.trend && eng.trend.signals) || []).map(s => ({ label: s.label, level: s.level, evidence: s.evidence }));
     groups[cls].push({
       id: cr.id, name: cr.name, platform: cr.platform || '—', status: cr.status || '—', is_new: !!cr.is_new,
@@ -405,7 +416,7 @@ function computeCreator(db, items) {
   }
   for (const k in groups) groups[k].sort((a, b) => b.totalPlay - a.totalPlay);
   const summary = { growth: groups.growth.length, bottleneck: groups.bottleneck.length, cultivate: groups.cultivate.length, watch: groups.watch.length, total: creatorRows.length };
-  return { ready: true, summary, groups };
+  return { ready: true, summary, groups, rules };
 }
 
 // ---------- 模块8 经营经验库 ----------
