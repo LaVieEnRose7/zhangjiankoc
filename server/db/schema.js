@@ -407,6 +407,7 @@ function migrate(db) {
   add('creators', 'forms', 'TEXT');
   add('creators', 'avg_cycle_days', 'INTEGER');
   add('creators', 'cost_ceiling', 'REAL');
+  add('creators', 'manual_cpm', 'REAL');
   add('creators', 'bad_direction', 'TEXT');
   // executions 增加「待发布」阶段
   // （阶段为自由文本，无需加列，仅导入/表单使用枚举）

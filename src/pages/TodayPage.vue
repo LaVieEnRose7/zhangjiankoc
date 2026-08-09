@@ -114,7 +114,7 @@
           <span v-if="h.rank" style="font-size:12px;color:var(--ink-faint)">#{{ h.rank }}</span>
           <span v-if="h.heat" style="font-size:12px;color:var(--ink-faint)">&#x1F525; {{ fmt(h.heat) }}</span>
         </div>
-        <div style="font-weight:600;font-size:14px;margin-bottom:6px;cursor:pointer;line-height:1.5" @click="openRealLink(h.url)">{{ h.title }}</div>
+        <div class="hotspot-title-link" @click="openRealLink(h.url)">{{ h.title }}</div>
         <div style="font-size:12px;color:var(--ink-faint);margin-bottom:8px">
           {{ h.valid_until ? '有效期至 ' + h.valid_until : (h.up ? 'UP ' + h.up : '') }}
         </div>
@@ -122,7 +122,7 @@
           {{ h.screen_reason || h.risk_note }}
         </div>
         <img v-if="h.pic" :src="h.pic" style="width:100%;max-height:100px;object-fit:cover;border-radius:8px;margin-bottom:8px;background:var(--gray-100)" @error="e => e.target.style.display='none'" />
-        <n-button size="small" secondary :disabled="h.screen_result === '不符合'" @click="toOpportunity(h.id)">生成机会</n-button>
+        <n-button size="small" secondary :disabled="h.screen_result === '不符合'" @click="toOpportunity(h)">生成机会</n-button>
       </div>
     </div>
     <EmptyState v-else icon="trending">今日热点获取失败，请检查网络或 API 配置</EmptyState>
@@ -135,9 +135,9 @@
       </h3>
     </div>
     <div v-if="expiring.length" class="card" style="padding:0;overflow:hidden">
-      <div v-for="e in expiring" :key="e.id" style="display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--gray-100);cursor:pointer;transition:background .15s" @click="openOppDrawer(e.id)" @mouseenter="h => h.target.style.background='var(--gray-50)'" @mouseleave="h => h.target.style.background=''">
+      <div v-for="e in expiring" :key="e.kind + '-' + e.id" style="display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--gray-100);transition:background .15s" @mouseenter="h => h.currentTarget.style.background='var(--gray-50)'" @mouseleave="h => h.currentTarget.style.background=''">
         <span :class="['urgency-badge', e.urgency]">{{ urgencyLabel(e.urgency) }}</span>
-        <span style="flex:1;font-weight:500">{{ e.title }}</span>
+        <span class="hotspot-title-link" style="flex:1" @click="openExpiring(e)">{{ e.title }}</span>
         <span style="font-size:12px;color:var(--ink-faint)">{{ e.deadline }} · {{ e.note }}</span>
       </div>
     </div>
@@ -273,7 +273,19 @@ function urgencyLabel(u) {
 }
 
 function handleTodoClick(t) { t.ref === 'opportunity' ? goPage('opportunities') : t.ref === 'review' ? goPage('ops') : goPage('opportunities') }
-function openRealLink(url) { if (url) window.open(url, '_blank') }
+function openRealLink(url) {
+  if (!url) return showToast('该热点暂无有效来源链接', true)
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+function isDirectContentLink(item) {
+  const url = String(item?.url || '')
+  return /bilibili\.com\/video\//i.test(url) || /douyin\.com\/(video|note)\//i.test(url)
+}
+function openExpiring(item) {
+  if (item.url) return openRealLink(item.url)
+  if (item.kind === 'opportunity') return openOppDrawer(item.id)
+  showToast('该热点暂无有效来源链接', true)
+}
 function scrollTo(id) { document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
 
 async function load() {
@@ -284,10 +296,14 @@ async function load() {
     const d = await apiGet('/today')
     summary.value = d.campaignSummary || null
     appState.activeCampId = summary.value?.id || null
-    hotspots.value = d.candidateHotspots || []
     expiring.value = d.expiring || []
     todos.value = d.execTodos || {}
   } catch (e) { errors.push(`今日概览：${e.message}`) }
+  try {
+    const live = (await apiGet('/today/hotspots?limit=100')).list || []
+    // 热词搜索页不冒充发布内容，只展示能直达具体视频/作品的热点。
+    hotspots.value = live.filter(isDirectContentLink).slice(0, 40)
+  } catch (e) { errors.push(`今日热点：${e.message}`) }
   try { recos.value = (await apiGet('/today/recommendations?limit=8')).list || [] } catch (e) { errors.push(`推荐：${e.message}`) }
   if (errors.length) {
     error.value = errors.join('；')
@@ -348,8 +364,19 @@ async function saveFocus() {
   } catch (e) { showToast(e.message, true) }
   finally { savingFocus.value = false }
 }
-async function toOpportunity(hid) {
+async function toOpportunity(h) {
   try {
+    let hid = h.id
+    // 每日真实热点来自抓取快照，先保存为候选热点，再沿用现有采纳流程。
+    if (typeof hid !== 'number') {
+      const saved = await apiPost('/hotspots', {
+        title: h.title, source_label: h.source, platform: h.source,
+        category: '泛娱乐', heat: Number(h.heat) || 0, trend: '上升',
+        url: h.url, description: h.up ? `发布者：${h.up}` : '',
+        source: '每日真实热点', status: '候选', created_by: user.value
+      })
+      hid = saved.id
+    }
     const r = await apiPost(`/hotspots/${hid}/adopt`, { campaign_id: appState.activeCampId, user: user.value })
     appState.pendingOpportunityId = r.id
     goPage('opportunities')
@@ -411,3 +438,18 @@ async function saveTodo() {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.hotspot-title-link {
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+  cursor: pointer;
+  text-decoration: none;
+}
+.hotspot-title-link:hover {
+  color: var(--brand);
+  text-decoration: underline;
+}
+</style>

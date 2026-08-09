@@ -268,7 +268,7 @@ ${(cases || []).slice(0, 5).map(c => `- ${c.title}｜形式:${c.content_type}｜
 ${(experiences || []).map(e => `- [${e.boost > 0 ? '正向' : '负向'}][${e.category}] ${e.content}`).join('\n') || '无'}
 
 【可选创作者】
-${(creators || []).slice(0, 8).map(c => `- id:${c.id} ${c.name}｜${c.categories}｜粉丝:${c.fans}｜均播:${c.avg_play}｜合作${c.coop_count}次｜平均激活:${c.avg_activation ?? '无'}%｜平均ROI7:${c.avg_roi7 ?? '无'}｜状态:${c.status}`).join('\n') || '无'}
+${(creators || []).slice(0, 8).map(c => `- id:${c.id} ${c.name}｜${c.categories}｜粉丝:${c.fans}｜均播:${c.avg_play}｜平均激活:${c.avg_activation ?? '无'}%｜平均ROI7:${c.avg_roi7 ?? '无'}`).join('\n') || '无'}
 
 评估维度：高消费潜力、良好播放量预期、首日激活转化率预期、7日付费ROI预期。
 请严格输出以下JSON（不要输出其他内容）：

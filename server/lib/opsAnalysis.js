@@ -33,7 +33,29 @@ function normContentType(s) {
   for (const k in CT_MAP) if (s.includes(k)) return CT_MAP[k];
   return '其他';
 }
-function normPlay(s) { return s ? s.trim() : '其他'; }
+const PLAY_TAGS = [
+  { tag: '平民养成', words: ['平民', '零氪', '微氪', '月卡', '养成', '资源规划', '省钱'] },
+  { tag: '新手攻略', words: ['新手', '入门', '开荒', '萌新', '避坑', '必看', '教学'] },
+  { tag: '职业测评', words: ['职业', '强度', '测评', '评测', '配装', '技能', '流派'] },
+  { tag: '副本攻略', words: ['副本', '秘境', 'boss', '首领', '通关', '打法', '攻略'] },
+  { tag: '速通竞速', words: ['速通', '竞速', '最快', '极限', '纪录', '冲榜'] },
+  { tag: '整活挑战', words: ['整活', '挑战', '翻车', '搞笑', '抽象', '名场面', '梗'] },
+  { tag: '剧情二创', words: ['剧情', '二创', '同人', '手书', '配音', '短剧', '故事'] },
+  { tag: '盘点解说', words: ['盘点', '解说', '一分钟', '看懂', '科普', '解析', '总结'] },
+  { tag: '抽卡体验', words: ['抽卡', '欧皇', '非酋', '卡池', '出货', '保底'] },
+  { tag: '外观展示', words: ['外观', '时装', '皮肤', '捏脸', '坐骑', '展示'] },
+  { tag: 'PVP 对战', words: ['pvp', '竞技场', '对战', 'pk', '团战'] },
+  { tag: '版本资讯', words: ['版本', '更新', '活动', '前瞻', '上线', '公告'] },
+  { tag: '情怀回忆', words: ['情怀', '回忆', '怀旧', '青春', '周年'] }
+];
+function normPlay(s) {
+  if (!s) return '其他玩法';
+  const text = String(s).toLowerCase().replace(/\s+/g, '');
+  for (const group of PLAY_TAGS) {
+    if (group.words.some(word => text.includes(word))) return group.tag;
+  }
+  return '其他玩法';
+}
 function normGoal(s) {
   if (!s) return '未标注';
   if (s.includes('周年庆')) return '周年庆';
@@ -71,8 +93,8 @@ function getContentItems(db, { campaignId, start, end }) {
   }
   const caRows = db.prepare(`
     SELECT * FROM cases
-    WHERE source='项目执行结果' AND play_count > 0
-      AND publish_date BETWEEN ? AND ?
+    WHERE play_count > 0
+      AND COALESCE(publish_date, date(created_at)) BETWEEN ? AND ?
       ${campaignId ? 'AND campaign_id = ?' : ''}
   `).all(start, end, ...(campaignId ? [campaignId] : []));
   for (const r of caRows) {
@@ -80,9 +102,9 @@ function getContentItems(db, { campaignId, start, end }) {
       source: 'case', id: r.id, title: r.title,
       platform: r.platform, creator_id: r.creator_id, creator_name: r.creator_name,
       opportunity_id: r.linked_opportunity_id, campaign_id: r.campaign_id,
-      content_type: normContentType(r.content_type),
-      play_method: normPlay(r.play_method),
-      publish_date: r.publish_date,
+      content_type: normContentType(r.content_type || r.copy || r.raw_content || r.title),
+      play_method: normPlay(r.play_method || r.copy || r.title),
+      publish_date: r.publish_date || String(r.created_at || '').slice(0, 10),
       play: r.play_count || 0, like: r.like_count || 0, comment: r.comment_count || 0,
       activation: r.activation_d1, roi: r.roi_d7, cost: r.cost || 0
     });
@@ -174,7 +196,12 @@ function computeOverview(items, baselines, planned, pmGroups) {
   const gaoQian = published.filter(i => i.play >= 150000 || (i.roi && i.roi >= 1.0)).length;
   const newPlays = (pmGroups || []).filter(g => g.level === '值得测试').length;
   const platforms = {};
-  for (const i of published) platforms[i.platform] = (platforms[i.platform] || 0) + 1;
+  const platformPlays = {};
+  for (const i of published) {
+    const platform = i.platform || '其他';
+    platforms[platform] = (platforms[platform] || 0) + 1;
+    platformPlays[platform] = (platformPlays[platform] || 0) + (i.play || 0);
+  }
   const roiArr = published.map(i => i.roi).filter(x => x != null);
   const actArr = published.map(i => i.activation).filter(x => x != null);
   const avgRoi7 = round1(mean(roiArr));
@@ -182,7 +209,7 @@ function computeOverview(items, baselines, planned, pmGroups) {
   const completion = planned ? round1(published.length / planned * 100) : 0;
   const metrics = {
     published: published.length, creators, completion, totalPlay, totalInteraction,
-    baiZan, gaoQian, newPlays, avgRoi7, avgActivation, platforms,
+    baiZan, gaoQian, newPlays, avgRoi7, avgActivation, platforms, platformPlays,
     dataCompleteness: published.length ? round1(published.filter(i => i.play > 0).length / published.length * 100) : 0
   };
   return { metrics, compare: buildCompare(metrics, baselines) };
@@ -298,55 +325,34 @@ function computeOpp(db, items) {
 //   值得培养：新人，或样本少但趋势正向(上升/平稳)且适配当前任务
 //   成长：近期上升 且 本周期 ROI7≥0.8（无瓶颈信号）
 //   其余 → 观察
-function classifyCreator(period, eng, overallAvgPlay) {
-  const hasRoi = (period.roiCount || 0) > 0;
-  const recentTrend = eng.recentTrend;
+function classifyCreator(period, eng, benchmark) {
   const signals = (eng.trend && eng.trend.signals) || [];
   const hasQualityDrop = signals.some(s => s.type === 'quality_drop');
   const hasRepeat = signals.some(s => s.type === 'repeat');
-  const hasNewPlay = signals.some(s => s.type === 'new_play');
   const isNew = !!eng.creator.is_new;
-  const suitable = eng.suggestion && eng.suggestion.suitableForCurrent;
-  const status = eng.creator.status;
-  const roi = period.avgRoi;
-  const periodTrend = period.trend;
   const pub = period.published;
-  const ap = period.avgPlay || 0;
-  // 瓶颈：内容表现信号；有 ROI 时 ROI 过低；无 ROI 时均播显著低于整体
-  const bottleneckByPerf = hasQualityDrop || hasRepeat
-    || (hasRoi && ((periodTrend === '下降' && roi < 0.8) || (roi < 0.6 && pub >= 2)))
-    || (status === '暂停' || status === '黑名单')
-    || (!hasRoi && periodTrend === '下降' && overallAvgPlay > 0 && ap < overallAvgPlay * 0.5);
+  const totalPlay = period.totalPlay || 0;
+  const cpm = period.cpm;
+  const highCpm = cpm != null && benchmark.avgCpm > 0 && cpm > benchmark.avgCpm * 1.5;
+  const lowPlay = pub >= 2 && benchmark.avgCreatorPlay > 0 && totalPlay < benchmark.avgCreatorPlay * 0.5;
+  const bottleneckByPerf = hasQualityDrop || hasRepeat || highCpm || lowPlay;
   if (bottleneckByPerf) {
     const bits = [];
     if (hasQualityDrop) bits.push('内容质量下降');
     if (hasRepeat) bits.push('素材重复');
-    if (hasRoi && periodTrend === '下降' && roi < 0.8) bits.push('本周期播放趋势下降');
-    if (hasRoi && roi < 0.6 && pub >= 2) bits.push(`平均 ROI=${roi}<0.6`);
-    if (!hasRoi && periodTrend === '下降' && ap < overallAvgPlay * 0.5) bits.push(`均播 ${Math.round(ap)} 显著低于整体均值 ${Math.round(overallAvgPlay)}`);
-    if (status === '暂停') bits.push('当前状态：暂停合作');
-    if (status === '黑名单') bits.push('已列入黑名单');
+    if (highCpm) bits.push(`CPM ¥${cpm} 高于整体 ¥${benchmark.avgCpm}`);
+    if (lowPlay) bits.push(`发布 ${pub} 条但总播放 ${Math.round(totalPlay)} 偏低`);
     return { cls: 'bottleneck', reason: bits.join('；') || '综合表现偏弱' };
   }
-  if (hasRoi) {
-    if (roi >= 1.0 && pub >= 2 && periodTrend !== '下降') {
-      return { cls: 'growth', reason: `本周期平均 ROI=${roi}≥1.0 且趋势未下滑，处于成长通道` };
-    }
-    if (isNew || (roi >= 0.6 && roi < 1.0 && (hasNewPlay || suitable || periodTrend === '上升' || recentTrend === '上升'))) {
-      const why = isNew ? '新合作创作者，样本少但适配当前任务，值得小成本培养'
-        : `ROI=${roi} 中等且${hasNewPlay ? '尝试新玩法' : suitable ? '适配当前任务' : '趋势向上'}，值得培养观察`;
-      return { cls: 'cultivate', reason: why };
-    }
-    return { cls: 'watch', reason: '表现中性，建议继续观察' };
+  const efficient = cpm != null && benchmark.avgCpm > 0 && cpm <= benchmark.avgCpm;
+  const strongPlay = benchmark.avgCreatorPlay > 0 && totalPlay >= benchmark.avgCreatorPlay;
+  if (pub >= 2 && strongPlay && (efficient || cpm == null)) {
+    return { cls: 'growth', reason: `发布 ${pub} 条、总播放 ${Math.round(totalPlay)} 达到整体水平，CPM ${cpm == null ? '待补充' : '¥' + cpm}` };
   }
-  // 无 ROI 数据：改用播放量维度
-  if (overallAvgPlay > 0 && ap >= overallAvgPlay && periodTrend !== '下降') {
-    return { cls: 'growth', reason: `本周期均播 ${Math.round(ap)} 高于整体均值且无下滑，表现领先` };
+  if (isNew || (pub <= 2 && (efficient || strongPlay))) {
+    return { cls: 'cultivate', reason: `样本 ${pub} 条，${efficient ? 'CPM 效率较好' : '播放潜力较好'}，建议继续小规模培养` };
   }
-  if (overallAvgPlay > 0 && ap < overallAvgPlay * 0.5) {
-    return { cls: 'bottleneck', reason: `均播 ${Math.round(ap)} 显著低于整体均值 ${Math.round(overallAvgPlay)}` };
-  }
-  return { cls: 'watch', reason: '无 ROI 数据，按播放量归为观察' };
+  return { cls: 'watch', reason: `发布 ${pub} 条、总播放 ${Math.round(totalPlay)}，CPM ${cpm == null ? '待补充' : '¥' + cpm}，继续观察` };
 }
 
 function computeCreator(db, items) {
@@ -357,13 +363,20 @@ function computeCreator(db, items) {
   const creatorRows = db.prepare(`SELECT * FROM creators WHERE id IN (${q})`).all(...creatorIds);
   const byC = {};
   for (const i of items) { if (!i.creator_id) continue; (byC[i.creator_id] = byC[i.creator_id] || []).push(i); }
-  const allPlays = items.filter(i => i.play > 0).map(i => i.play);
-  const overallAvgPlay = mean(allPlays);
+  const totalAllPlay = items.reduce((s, i) => s + (i.play || 0), 0);
+  const totalAllCost = items.reduce((s, i) => s + (i.cost || 0), 0);
+  const benchmark = {
+    avgCreatorPlay: creatorRows.length ? totalAllPlay / creatorRows.length : 0,
+    avgCpm: totalAllPlay > 0 && totalAllCost > 0 ? Math.round(totalAllCost / totalAllPlay * 1000 * 10) / 10 : 0
+  };
   const groups = { growth: [], bottleneck: [], cultivate: [], watch: [] };
   for (const cr of creatorRows) {
     const cItems = (byC[cr.id] || []).filter(i => i.play > 0);
     const published = cItems.length;
     const totalPlay = cItems.reduce((s, i) => s + i.play, 0);
+    const totalCost = cItems.reduce((s, i) => s + (i.cost || 0), 0);
+    const actualCpm = totalPlay > 0 && totalCost > 0 ? Math.round(totalCost / totalPlay * 1000 * 10) / 10 : null;
+    const cpm = actualCpm != null ? actualCpm : (Number(cr.manual_cpm) > 0 ? Number(cr.manual_cpm) : null);
     const rois = cItems.map(i => i.roi).filter(x => x != null);
     const acts = cItems.map(i => i.activation).filter(x => x != null);
     const sortedC = [...cItems].sort((a, b) => a.publish_date < b.publish_date ? -1 : 1);
@@ -376,13 +389,13 @@ function computeCreator(db, items) {
       else if (m2 <= m1 * 0.85) periodTrend = '下降';
       else periodTrend = '平稳';
     }
-    const period = { published, avgRoi: round1(mean(rois)), avgAct: round1(mean(acts)), trend: periodTrend, roiCount: rois.length, avgPlay: published ? totalPlay / published : 0 };
+    const period = { published, totalPlay, totalCost, cpm, avgRoi: round1(mean(rois)), avgAct: round1(mean(acts)), trend: periodTrend, roiCount: rois.length, avgPlay: published ? totalPlay / published : 0 };
     const eng = creatorAnalysis.analyze(db, cr);
-    const { cls, reason } = classifyCreator(period, eng, overallAvgPlay);
+    const { cls, reason } = classifyCreator(period, eng, benchmark);
     const signals = ((eng.trend && eng.trend.signals) || []).map(s => ({ label: s.label, level: s.level, evidence: s.evidence }));
     groups[cls].push({
       id: cr.id, name: cr.name, platform: cr.platform || '—', status: cr.status || '—', is_new: !!cr.is_new,
-      published, totalPlay, avgRoi: period.avgRoi, avgAct: period.avgAct,
+      published, totalPlay, totalCost, cpm, avgPlay: period.avgPlay, avgRoi: period.avgRoi, avgAct: period.avgAct,
       baiZan: cItems.filter(i => i.like >= 100).length,
       gaoQian: cItems.filter(i => i.play >= 150000 || (i.roi && i.roi >= 1.0)).length,
       recentTrend: eng.recentTrend, periodTrend, trendSummary: (eng.trend && eng.trend.summary) || '',

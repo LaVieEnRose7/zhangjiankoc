@@ -46,20 +46,63 @@ function matchFansFromCases(db, acc) {
 
 /* ============ 案例结果自动判定 ============ */
 // 系统按「内容声量 + 转化表现」自动分级，不依赖人工选择。
-// 爆款：播放≥30万，且 ROI7≥0.8 或首日激活率≥3%
-// 良好：ROI7≥0.8，或首日激活率≥3%，或播放≥5万
-// 一般：播放≥5000，但转化未达良好
-// 失败：播放<5000，且 ROI7/激活率均未达标
-function judgeCaseResult(c) {
+const DEFAULT_CASE_RATING_RULES = Object.freeze({
+  viral_play: 300000,
+  good_play: 50000,
+  normal_play: 5000,
+  roi: 0.8,
+  activation: 3
+});
+
+function getCaseRatingRules(db = getDb()) {
+  const row = db.prepare("SELECT value FROM settings WHERE key='case_rating_rules'").get();
+  if (!row || !row.value) return { ...DEFAULT_CASE_RATING_RULES };
+  try {
+    const parsed = JSON.parse(row.value);
+    return Object.fromEntries(Object.entries(DEFAULT_CASE_RATING_RULES).map(([key, fallback]) => {
+      const value = Number(parsed[key]);
+      return [key, Number.isFinite(value) && value >= 0 ? value : fallback];
+    }));
+  } catch (e) { return { ...DEFAULT_CASE_RATING_RULES }; }
+}
+
+function judgeCaseResult(c, rules = getCaseRatingRules()) {
   const play = Number(c.play_count) || 0;
-  const roi7 = c.roi_d7 == null || c.roi_d7 === '' ? null : Number(c.roi_d7);
-  const activation = c.activation_d1 == null || c.activation_d1 === '' ? null : Number(c.activation_d1);
-  const hasRoiHit = roi7 != null && !Number.isNaN(roi7) && roi7 >= 0.8;
-  const hasActivationHit = activation != null && !Number.isNaN(activation) && activation >= 3;
-  if (play >= 300000 && (hasRoiHit || hasActivationHit)) return '爆款';
-  if (hasRoiHit || hasActivationHit || play >= 50000) return '良好';
-  if (play >= 5000) return '一般';
+  if (play >= rules.viral_play) return '爆款';
+  if (play >= rules.good_play) return '良好';
+  if (play >= rules.normal_play) return '一般';
   return '失败';
+}
+
+function caseAnalysisText(c) {
+  return [c.title, c.copy, c.raw_content, c.topic_tags, c.summary].filter(Boolean).join('\n');
+}
+
+function applyCaseClassification(db, id, fields, mode) {
+  if (!fields) return;
+  const current = db.prepare('SELECT * FROM cases WHERE id=?').get(id);
+  if (!current) return;
+  const contentType = mode === 'ai' ? (fields.content_type || current.content_type || '') : (current.content_type || fields.content_type || '');
+  const playMethod = mode === 'ai' ? (fields.play_method || current.play_method || '') : (current.play_method || fields.play_method || '');
+  const hotspot = mode === 'ai' ? (fields.hotspot || current.hotspot || '') : (current.hotspot || fields.hotspot || '');
+  const analysis = { mode, analyzed_at: new Date().toISOString(), borrowable: fields.borrowable || '', risk_info: fields.risk_info || '' };
+  db.prepare('UPDATE cases SET content_type=?,play_method=?,hotspot=?,analysis_json=? WHERE id=?')
+    .run(contentType, playMethod, hotspot, JSON.stringify(analysis), id);
+}
+
+async function enrichCaseClassification(id) {
+  const db = getDb();
+  const c = db.prepare('SELECT * FROM cases WHERE id=?').get(id);
+  if (!c) return false;
+  const text = caseAnalysisText(c);
+  if (!text) return false;
+  // 规则先落库，保证导入后立即能进入内容分层；AI 成功后再覆盖缺失分类。
+  applyCaseClassification(db, id, ai.ruleExtractCase(text, c.url || ''), 'rule');
+  try {
+    const fields = await ai.extractCase({ text, link: c.url || '' });
+    applyCaseClassification(db, id, fields, 'ai');
+    return true;
+  } catch (e) { return false; }
 }
 
 /* ============ 今日工作（六模块） ============ */
@@ -103,7 +146,7 @@ router.get('/today', (req, res) => {
 
     // 模块3：今日推荐机会（实时计算，不落库；受风险红线限制的热点不进入推荐）
     const campaigns = activeCamps;
-    const creatorsAll = db.prepare("SELECT * FROM creators WHERE status IN ('可合作','合作中')").all();
+    const creatorsAll = db.prepare('SELECT * FROM creators').all();
     const recos = [];
     for (const h of db.prepare("SELECT * FROM hotspots WHERE status='候选' AND (screen_result IS NULL OR screen_result!='不符合') ORDER BY heat DESC").all()) {
       if (baseCamp && rec.evaluateRisk(h, baseCamp).blocked) continue; // 风险红线：不推荐
@@ -118,13 +161,15 @@ router.get('/today', (req, res) => {
 
     // 模块4：即将过期机会
     const expiring = [];
-    for (const o of db.prepare("SELECT * FROM opportunities WHERE status NOT IN ('已验证','不采用','已过期') AND deadline IS NOT NULL").all()) {
+    for (const o of db.prepare(`SELECT o.*, h.url AS hotspot_url
+      FROM opportunities o LEFT JOIN hotspots h ON h.id=o.hotspot_id
+      WHERE o.status NOT IN ('已验证','不采用','已过期') AND o.deadline IS NOT NULL`).all()) {
       const dl = new Date(o.deadline).getTime();
       let urgency = null, note = '';
       if (dl < todayMs) { urgency = 'missed'; note = '已错过最佳时效'; }
       else if (dateOnly(new Date(dl)) === today) { urgency = 'today'; note = '建议今天确认'; }
       else if (dl <= todayMs + DAY) { urgency = '24h'; note = '24小时内需启动'; }
-      if (urgency) expiring.push({ kind: 'opportunity', id: o.id, title: o.title, deadline: o.deadline, urgency, note });
+      if (urgency) expiring.push({ kind: 'opportunity', id: o.id, title: o.title, deadline: o.deadline, urgency, note, url: o.hotspot_url || null });
     }
     for (const h of db.prepare("SELECT * FROM hotspots WHERE status='候选' AND valid_until IS NOT NULL").all()) {
       const dl = new Date(h.valid_until).getTime();
@@ -132,7 +177,8 @@ router.get('/today', (req, res) => {
       if (dl < todayMs) { urgency = 'missed'; note = '热点已过期，建议尽快处理或放弃'; }
       else if (dateOnly(new Date(dl)) === today) { urgency = 'today'; note = '建议今天确认'; }
       else if (dl <= todayMs + DAY) { urgency = '24h'; note = '24小时内需启动'; }
-      if (urgency) expiring.push({ kind: 'hotspot', id: h.id, title: h.title, deadline: h.valid_until, urgency, note });
+      // 没有真实来源链接的旧演示数据不再出现在“即将过期”热点中。
+      if (urgency && h.url) expiring.push({ kind: 'hotspot', id: h.id, title: h.title, deadline: h.valid_until, urgency, note, url: h.url });
     }
     const urgencyRank = u => u === 'missed' ? 0 : u === 'today' ? 1 : u === '24h' ? 2 : 3;
     expiring.sort((a, b) => urgencyRank(a.urgency) - urgencyRank(b.urgency));
@@ -177,7 +223,7 @@ router.get('/today', (req, res) => {
 const TABLES = {
   campaigns: ['name','game_name','goal','target_audience','criteria','keywords','content_directions','version_event','focus_content','goals','focus_detail','prefs','risk_rules','rule_summary','target_platform','owner','agency','is_current','start_date','end_date','priority','status','created_by'],
   hotspots: ['title','platform','category','heat','trend','source','source_label','url','description','tags','valid_until','relevance','risk_note','status','created_by'],
-  creators: ['name','platform','home_url','fans','categories','avg_play','coop_count','avg_activation','avg_roi7','price','strengths','contact','status','notes','account_type','agency','content_type','coop_cycle','willingness','stability','is_new','good_play','good_role','style','forms','avg_cycle_days','cost_ceiling','bad_direction'],
+  creators: ['name','platform','home_url','fans','categories','avg_play','avg_activation','avg_roi7','price','manual_cpm','strengths','contact','notes','account_type','agency','content_type','coop_cycle','willingness','stability','is_new','good_play','good_role','style','forms','avg_cycle_days','cost_ceiling','bad_direction'],
   creator_accounts: ['creator_id','platform','account_name','home_url','fans','avg_play','avg_activation','avg_roi7','role','is_primary'],
   cases: ['title','platform','url','creator_id','creator_name','campaign_id','campaign_name','game_name','content_type','marketing_node','hotspot','play_method','creator_type','topic_tags','raw_content','analysis_json','analysis_edited','play_count','like_count','comment_count','activation_d1','roi_d7','cost','result','summary','source','confirm_status','is_favorite','is_reusable','linked_opportunity_id','benchmark_met','review_conclusion','note','publish_date','created_by','fans','copy','favorite_count','share_count','creator_platform_id'],
   executions: ['opportunity_id','creator_id','creator_name','stage','publish_url','publish_date','planned_date','exec_play_method','adjustment','fail_reason','play_count','like_count','comment_count','activation_d1','roi_d7','cost','income','note','revision_count','on_time','coop_rating','accuracy','agency_feedback','created_by'],
@@ -275,6 +321,58 @@ router.post('/game-news/refresh', async (req, res) => {
 });
 
 /* ============ 创作者库：实时分析（历史表现/趋势/系统建议） ============ */
+// 营销任务阶段：结束边界取下一任务开始日，避免依赖不准确的手填结束日期。
+function creatorPhases(db) {
+  const rows = db.prepare("SELECT id,name,start_date,end_date,status FROM campaigns WHERE start_date IS NOT NULL AND start_date<>'' ORDER BY date(start_date), id").all();
+  return rows.map((row, index) => ({
+    ...row,
+    phase_start: String(row.start_date).slice(0, 10),
+    phase_end_exclusive: rows[index + 1] ? String(rows[index + 1].start_date).slice(0, 10) : null
+  })).reverse();
+}
+
+router.get('/creators/phases', (req, res) => {
+  try { ok(res, creatorPhases(getDb())); }
+  catch (e) { fail(res, e.message); }
+});
+
+router.get('/creators/phase-performance', (req, res) => {
+  try {
+    const db = getDb();
+    const phases = creatorPhases(db);
+    const customStart = String(req.query.date_from || '').slice(0, 10);
+    const customEnd = String(req.query.date_to || '').slice(0, 10);
+    const phase = customStart ? {
+      id: 'custom', name: '自定义时间段', phase_start: customStart,
+      phase_end_exclusive: customEnd ? dateOnly(new Date(new Date(customEnd).getTime() + DAY)) : null
+    } : phases.find(p => Number(p.id) === Number(req.query.campaign_id));
+    if (!phase) return fail(res, '营销任务阶段不存在', 404);
+    const cases = db.prepare(`SELECT id,creator_id,creator_name,platform,publish_date,play_count,activation_d1,roi_d7,result
+      FROM cases WHERE publish_date>=? AND (? IS NULL OR publish_date<?)`).all(phase.phase_start, phase.phase_end_exclusive, phase.phase_end_exclusive);
+    const byCreator = new Map();
+    for (const item of cases) {
+      const creatorId = Number(item.creator_id) || resolveCreatorId(db, { creator_name: item.creator_name, platform: item.platform });
+      if (!creatorId) continue;
+      if (!byCreator.has(creatorId)) byCreator.set(creatorId, []);
+      byCreator.get(creatorId).push(item);
+    }
+    const avg = (rows, key) => {
+      const nums = rows.map(x => Number(x[key])).filter(x => Number.isFinite(x));
+      return nums.length ? Math.round(nums.reduce((a, b) => a + b, 0) / nums.length * 100) / 100 : null;
+    };
+    const list = [...byCreator.entries()].map(([creator_id, rows]) => ({
+      creator_id,
+      content_count: rows.length,
+      total_play: rows.reduce((sum, x) => sum + (Number(x.play_count) || 0), 0),
+      avg_play: avg(rows, 'play_count'),
+      avg_activation: avg(rows.filter(x => x.activation_d1 != null), 'activation_d1'),
+      avg_roi7: avg(rows.filter(x => x.roi_d7 != null), 'roi_d7'),
+      high_count: rows.filter(x => x.result === '爆款' || x.result === '良好').length
+    }));
+    ok(res, { phase, list, unmatched_count: cases.length - [...byCreator.values()].reduce((n, rows) => n + rows.length, 0) });
+  } catch (e) { fail(res, e.message); }
+});
+
 // 列表用：带派生字段的创作者（用于筛选/排序）
 router.get('/creators/insight-all', (req, res) => {
   try {
@@ -316,10 +414,21 @@ router.get('/creators/:id/published', (req, res) => {
     const names = new Set([creator.name, ...accounts.map(a => a.account_name)].map(normName).filter(Boolean));
     const platforms = new Set([creator.platform, ...accounts.map(a => a.platform)].filter(Boolean).map(String));
 
+    let phase = null;
+    const customStart = String(req.query.date_from || '').slice(0, 10);
+    const customEnd = String(req.query.date_to || '').slice(0, 10);
+    if (customStart) phase = {
+      id: 'custom', name: '自定义时间段', phase_start: customStart,
+      phase_end_exclusive: customEnd ? dateOnly(new Date(new Date(customEnd).getTime() + DAY)) : null
+    };
+    else if (req.query.campaign_id) phase = creatorPhases(db).find(p => Number(p.id) === Number(req.query.campaign_id)) || null;
+    const inPhase = row => !phase || (row.publish_date && row.publish_date >= phase.phase_start && (!phase.phase_end_exclusive || row.publish_date < phase.phase_end_exclusive));
+
     const allCases = db.prepare(`SELECT id, title, url, platform, creator_id, creator_name, play_count, like_count, comment_count,
         favorite_count, share_count, activation_d1, roi_d7, cost, result, source, benchmark_met, publish_date
       FROM cases ORDER BY (publish_date IS NULL), publish_date DESC, id DESC`).all();
     const caseRows = allCases.filter(v => {
+      if (!inPhase(v)) return false;
       const direct = Number(v.creator_id) === id;
       if (direct) return true;
       if (v.creator_id) return false;
@@ -329,11 +438,12 @@ router.get('/creators/:id/published', (req, res) => {
     });
 
     const manual = db.prepare(`SELECT id, title, url, platform, play_count, publish_date, created_by
-      FROM creator_videos WHERE creator_id=? ORDER BY (publish_date IS NULL), publish_date DESC`).all(id);
+      FROM creator_videos WHERE creator_id=? ORDER BY (publish_date IS NULL), publish_date DESC`).all(id).filter(inPhase);
     const allExecs = db.prepare(`SELECT e.*, o.title AS opportunity_title
       FROM executions e LEFT JOIN opportunities o ON e.opportunity_id=o.id
       ORDER BY (e.publish_date IS NULL), e.publish_date DESC, e.id DESC`).all();
     const executions = allExecs.filter(e => {
+      if (!inPhase(e)) return false;
       const direct = Number(e.creator_id) === id;
       if (direct) return true;
       if (e.creator_id) return false;
@@ -381,7 +491,7 @@ router.get('/creators/:id/published', (req, res) => {
       benchmark_count: fromCases.filter(v => Number(v.benchmark_met) === 1).length,
       latest_publish_date: latest
     };
-    ok(res, { total: items.length, summary, items, fromCases, fromManual, executions });
+    ok(res, { total: items.length, summary, items, fromCases, fromManual, executions, phase });
   } catch (e) { fail(res, e.message); }
 });
 
@@ -643,19 +753,58 @@ router.post('/opportunities/from-reco', async (req, res) => {
 });
 
 /* ============ 案例：批量按播放数据重判结果（系统判定，供历史数据一键重算） ============ */
+router.get('/cases/rating-rules', (req, res) => {
+  try { ok(res, getCaseRatingRules(getDb())); }
+  catch (e) { fail(res, e.message); }
+});
+
+router.put('/cases/rating-rules', (req, res) => {
+  try {
+    const db = getDb();
+    const rules = {};
+    for (const [key, fallback] of Object.entries(DEFAULT_CASE_RATING_RULES)) {
+      const value = Number(req.body && req.body[key]);
+      if (!Number.isFinite(value) || value < 0) return fail(res, `${key} 必须是大于等于 0 的数字`, 400);
+      rules[key] = value;
+    }
+    if (rules.viral_play < rules.good_play || rules.good_play < rules.normal_play) {
+      return fail(res, '播放量阈值必须满足：爆款 ≥ 良好 ≥ 一般', 400);
+    }
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('case_rating_rules', ?)").run(JSON.stringify(rules));
+    const rows = db.prepare('SELECT * FROM cases').all();
+    const upd = db.prepare('UPDATE cases SET result=? WHERE id=?');
+    let updated = 0;
+    for (const c of rows) {
+      const result = judgeCaseResult(c, rules);
+      if (result !== c.result) { upd.run(result, c.id); updated++; }
+    }
+    ok(res, { rules, total: rows.length, updated });
+  } catch (e) { fail(res, e.message); }
+});
+
 router.post('/cases/rejudge', (req, res) => {
   try {
     const db = getDb();
     const rows = db.prepare('SELECT * FROM cases').all();
     const upd = db.prepare('UPDATE cases SET result=? WHERE id=?');
+    const rules = getCaseRatingRules(db);
     const dist = {};
     let updated = 0;
     for (const c of rows) {
-      const r = judgeCaseResult(c);
+      const r = judgeCaseResult(c, rules);
       dist[r] = (dist[r] || 0) + 1;
       if (r !== c.result) { upd.run(r, c.id); updated++; }
     }
     ok(res, { total: rows.length, updated, dist });
+  } catch (e) { fail(res, e.message); }
+});
+
+router.post('/cases/analyze-missing', async (req, res) => {
+  try {
+    const rows = getDb().prepare("SELECT id FROM cases WHERE content_type IS NULL OR content_type='' OR play_method IS NULL OR play_method=''").all();
+    let aiUpdated = 0;
+    for (const row of rows) if (await enrichCaseClassification(row.id)) aiUpdated++;
+    ok(res, { total: rows.length, updated: rows.length, aiUpdated });
   } catch (e) { fail(res, e.message); }
 });
 
@@ -713,6 +862,17 @@ router.post('/creator-accounts/sync-fans', async (req, res) => {
   } catch (e) { console.error('SYNC-FANS ERR', e && e.stack || e); fail(res, e && e.message || 'sync error'); }
 });
 
+// 根据创作者主页实时获取平台、昵称和粉丝数，供录入表单即时回填。
+router.post('/creators/fetch-profile', async (req, res) => {
+  try {
+    const url = String((req.body && req.body.url) || '').trim();
+    if (!url) return fail(res, '请先填写主页链接', 400);
+    const result = await fetchProfile(url);
+    if (!result.ok) return fail(res, result.error || '主页数据获取失败', 422);
+    ok(res, { platform: result.platform, name: result.name || '', fans: Number(result.fans) || 0, fetched_at: new Date().toISOString() });
+  } catch (e) { fail(res, e.message); }
+});
+
 for (const [table, cols] of Object.entries(TABLES)) {
   router.get(`/${table}`, (req, res) => {
     try {
@@ -729,6 +889,7 @@ for (const [table, cols] of Object.entries(TABLES)) {
             (SELECT home_url FROM creator_accounts a WHERE a.creator_id=c.id ORDER BY is_primary DESC, id ASC LIMIT 1) AS primary_home_url,
             (SELECT fans FROM creator_accounts a WHERE a.creator_id=c.id ORDER BY is_primary DESC, id ASC LIMIT 1) AS primary_fans,
             (SELECT avg_play FROM creator_accounts a WHERE a.creator_id=c.id ORDER BY is_primary DESC, id ASC LIMIT 1) AS primary_avg_play,
+            (SELECT ROUND(AVG(play_count), 0) FROM cases ca WHERE ca.creator_id=c.id AND ca.play_count>0) AS case_avg_play,
             (SELECT avg_roi7 FROM creator_accounts a WHERE a.creator_id=c.id ORDER BY is_primary DESC, id ASC LIMIT 1) AS primary_avg_roi7
           FROM creators c
           ORDER BY c.id DESC
@@ -737,7 +898,7 @@ for (const [table, cols] of Object.entries(TABLES)) {
           platform: r.primary_platform || r.platform,
           home_url: r.primary_home_url || r.home_url,
           fans: r.primary_fans ?? r.fans,
-          avg_play: r.primary_avg_play ?? r.avg_play,
+          avg_play: r.case_avg_play ?? r.primary_avg_play ?? r.avg_play,
           avg_roi7: r.primary_avg_roi7 ?? r.avg_roi7
         }));
       } else if (table === 'cases') {
@@ -988,7 +1149,7 @@ router.post('/hotspots/:id/analyze', async (req, res) => {
     const camps = rec.activeCampaigns(db);
     let best = null, bestCamp = null;
     for (const c of camps) { const r = rec.scoreHotspot(h, c); if (!best || r.score > best.score) { best = r; bestCamp = c; } }
-    const creators = db.prepare("SELECT * FROM creators WHERE status IN ('可合作','合作中')").all();
+    const creators = db.prepare('SELECT * FROM creators').all();
     let draft = null, mode = 'rule', errMsg = null;
     try { draft = await ai.generateOpportunityDraft({ hotspot: h, campaign: bestCamp, creators }); }
     catch (e) { mode = 'rule'; errMsg = e.message === 'NO_API_KEY' ? '未配置API Key，已用规则生成' : `AI生成失败，已用规则生成（${e.message.slice(0, 60)}）`; }
@@ -1007,7 +1168,7 @@ router.post('/hotspots/:id/adopt', async (req, res) => {
     const { campaign_id, draft, user } = req.body;
     const camp = campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(campaign_id) : null;
     const score = rec.scoreHotspot(h, camp);
-    const creators = db.prepare("SELECT * FROM creators WHERE status IN ('可合作','合作中')").all();
+    const creators = db.prepare('SELECT * FROM creators').all();
     let play_method, game_combo, cost, suggested_time, risk_level, risk_note;
     if (draft && (draft.play_method || draft.game_combo)) {
       play_method = draft.play_method; game_combo = draft.game_combo; risk_note = draft.risk_note;
@@ -1047,7 +1208,7 @@ router.post('/opportunities/:id/evaluate', async (req, res) => {
       return kws.some(k => t.includes(k.toLowerCase()));
     }).slice(0, 5);
     const exps = db.prepare("SELECT * FROM experiences WHERE status='已确认'").all();
-    const creators = db.prepare("SELECT * FROM creators WHERE status IN ('可合作','合作中')").all();
+    const creators = db.prepare('SELECT * FROM creators').all();
 
     // 规则打分（始终计算，作为兜底和对照）
     const ruleResult = h ? rec.scoreHotspot(h, camp) : { score: null, verdict: null, detail: [] };
@@ -1182,7 +1343,7 @@ router.post('/opportunities/:id/generate-direction', async (req, res) => {
     if (!o) return fail(res, '机会不存在', 404);
     const h = o.hotspot_id ? db.prepare('SELECT * FROM hotspots WHERE id=?').get(o.hotspot_id) : null;
     const camp = o.campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(o.campaign_id) : null;
-    const creators = db.prepare("SELECT * FROM creators WHERE status IN ('可合作','合作中')").all();
+    const creators = db.prepare('SELECT * FROM creators').all();
     // 手动创建的机会可能没有关联热点，用机会标题拼一个最小热点对象给 AI
     const hsForAi = h || { title: o.title, category: '手动创建', platform: camp ? (camp.target_platform || 'B站') : 'B站', heat: null, trend: '—', description: o.decision || '', tags: '' };
     let draft = null, mode = 'rule', errMsg = null;
@@ -1216,7 +1377,7 @@ router.post('/opportunities/:id/generate-plan', async (req, res) => {
     if (!o) return fail(res, '机会不存在', 404);
     const h = o.hotspot_id ? db.prepare('SELECT * FROM hotspots WHERE id=?').get(o.hotspot_id) : null;
     const camp = o.campaign_id ? db.prepare('SELECT * FROM campaigns WHERE id=?').get(o.campaign_id) : null;
-    const creators = db.prepare("SELECT * FROM creators WHERE status IN ('可合作','合作中')").all();
+    const creators = db.prepare('SELECT * FROM creators').all();
     const hsForAi = h || { title: o.title, category: '手动创建', platform: (camp && camp.target_platform) || 'B站', heat: null, trend: '—', description: o.decision || '', tags: '' };
     let plan = null, mode = 'rule', errMsg = null;
     try {
@@ -1258,7 +1419,7 @@ router.post('/opportunities/generate-candidates', async (req, res) => {
     if (!camp) return fail(res, '请先在「营销任务」设置当前任务', 400);
     const templates = db.prepare('SELECT * FROM creative_templates ORDER BY usage_count DESC').all();
     const cases = db.prepare("SELECT * FROM cases WHERE result IN ('爆款','良好') ORDER BY roi_d7 DESC").all();
-    const creators = db.prepare("SELECT * FROM creators WHERE status IN ('可合作','合作中')").all();
+    const creators = db.prepare('SELECT * FROM creators').all();
     const focusD = camp.focus_detail ? safeParseJson(camp.focus_detail) : {};
     const goals = camp.goals ? safeParseJson(camp.goals) : {};
     const prefs = camp.prefs ? safeParseJson(camp.prefs) : {};
@@ -1567,6 +1728,9 @@ router.post('/import/:type', upload.single('file'), (req, res) => {
       // 案例导入：按播放数据自动判定结果（系统替用户判断，非手动选择）
       if (req.params.type === 'cases') {
         db.prepare('UPDATE cases SET result=? WHERE id=?').run(judgeCaseResult(record), r.lastInsertRowid);
+        const ruleFields = ai.ruleExtractCase(caseAnalysisText(record), record.url || '');
+        applyCaseClassification(db, r.lastInsertRowid, ruleFields, 'rule');
+        setImmediate(() => enrichCaseClassification(r.lastInsertRowid));
       }
       // 创作者导入（新模板：昵称 + 主发平台账号 + 可选分发平台账号），两层模型落库避免作者冗余
       if (req.params.type === 'creators') {

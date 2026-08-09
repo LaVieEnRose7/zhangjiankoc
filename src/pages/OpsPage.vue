@@ -3,7 +3,7 @@
     <div class="page-head">
       <div class="page-head-left">
         <h2>内容运营分析</h2>
-        <div class="sub">运营看板 · 内容分层 · 机会表现归因 · 运营建议</div>
+        <div class="sub">运营看板 · 内容分层 · 创作者分析 · 运营建议</div>
       </div>
       <div class="page-head-actions">
         <n-button secondary @click="archiveCycle" :disabled="loading || !analysis">归档周期</n-button>
@@ -11,22 +11,27 @@
       </div>
     </div>
 
-    <div class="card dash-filter">
-      <div class="form-row">
-        <label>营销任务</label>
-        <n-select v-model:value="filters.campaignId" :options="campaignOptions" placeholder="全部任务" clearable />
+    <div class="card stage-selector-card ops-period-selector">
+      <div class="period-selector-head">
+        <div><b>分析阶段（点击切换）</b><p>与创作者中心使用同一套营销任务阶段，共 {{ phases.length }} 个。</p></div>
+        <span v-if="timeMode === 'phase' && selectedPhase" class="tag green">当前：{{ selectedPhase.name }}</span>
+        <span v-else-if="timeMode === 'custom'" class="tag blue">当前：自定义时间</span>
       </div>
-      <div class="form-row">
-        <label>周期开始</label>
-        <n-input v-model:value="filters.start" type="date" />
+      <div class="period-stage-scroll">
+        <n-button v-for="phase in phases" :key="phase.id" style="flex-shrink:0"
+          :type="timeMode === 'phase' && Number(selectedPhaseId) === Number(phase.id) ? 'primary' : 'default'"
+          :secondary="timeMode !== 'phase' || Number(selectedPhaseId) !== Number(phase.id)"
+          @click="selectAnalysisPhase(phase)">
+          {{ phaseMonth(phase.phase_start) }} · {{ phase.name }}
+        </n-button>
+        <span v-if="!phases.length" class="hint">暂无带开始日期的营销任务</span>
       </div>
-      <div class="form-row">
-        <label>周期结束</label>
-        <n-input v-model:value="filters.end" type="date" />
-      </div>
-      <div class="form-row">
-        <label>周期模式</label>
-        <n-select v-model:value="filters.cycleMode" :options="cycleModeOptions" />
+      <div class="time-range-filter">
+        <div><label for="ops-date-from">开始日期</label><input id="ops-date-from" v-model="dateDraft.from" class="date-input" type="date" /></div>
+        <div><label for="ops-date-to">结束日期</label><input id="ops-date-to" v-model="dateDraft.to" class="date-input" type="date" /></div>
+        <n-button type="primary" :loading="loading" @click="applyAnalysisTime">查询</n-button>
+        <n-button secondary @click="clearAnalysisTime">清空</n-button>
+        <span class="hint">分析范围：{{ filters.start }} 至 {{ filters.end }}</span>
       </div>
     </div>
 
@@ -42,11 +47,11 @@
 
     <template v-if="analysis">
       <div v-if="tab === 'dashboard'">
-        <div class="card-grid card-grid-4">
+        <div class="ops-overview-grid">
           <n-card
-            v-for="s in statCards"
+            v-for="s in totalStatCards"
             :key="s.key"
-            class="stat-card ops-metric-card"
+            class="ops-total-card"
             :bordered="false"
           >
             <div class="ops-stat-head">
@@ -58,10 +63,20 @@
             <div class="stat-num" :style="{ color: s.color }">{{ s.value }}</div>
             <div class="dash-note">{{ s.note }}</div>
           </n-card>
+          <n-card v-for="p in platformStatCards" :key="p.key" :class="['ops-platform-card', p.key]" :bordered="false">
+            <div class="ops-platform-head">
+              <div><span class="ops-platform-dot"></span><b>{{ p.label }}</b></div>
+              <span class="tag gray">本周期</span>
+            </div>
+            <div class="ops-platform-metrics">
+              <div><b>{{ p.published }}</b><span>发布条数</span></div>
+              <div><b>{{ p.play }}</b><span>播放量</span></div>
+            </div>
+          </n-card>
         </div>
 
-        <div class="dash-grid">
-          <div class="card">
+        <div class="ops-dashboard-lower">
+          <div class="card ops-platform-distribution">
             <div class="sec-title">平台内容分布</div>
             <div v-if="platformRows.length" class="bar-list">
               <div v-for="p in platformRows" :key="p.name" class="bar-row">
@@ -72,34 +87,19 @@
             <EmptyState v-else icon="chart">暂无平台数据</EmptyState>
           </div>
 
-          <div class="card">
-            <div class="sec-title">机会表现归因</div>
-            <div class="mini-stats">
-              <div><b>{{ oppSummary.verified || 0 }}</b><span>达标</span></div>
-              <div><b>{{ oppSummary.partial || 0 }}</b><span>待复测</span></div>
-              <div><b>{{ oppSummary.failed || 0 }}</b><span>未达标</span></div>
-              <div><b>{{ oppSummary.none || 0 }}</b><span>无数据</span></div>
-            </div>
-            <div v-if="topOpps.length" class="compact-list">
-              <div v-for="o in topOpps" :key="o.id" class="compact-item">
-                <span>{{ o.title }}</span>
-                <StatusTag :text="verdictText(o.verdict)" />
+          <div class="card ops-actions-card">
+            <div class="sec-title">下周期 TOP 行动</div>
+            <div v-if="topActions.length" class="action-grid">
+              <div v-for="(a, index) in topActions" :key="a.target + a.advice" class="action-card">
+                <span class="action-index">{{ index + 1 }}</span>
+                <div>
+                  <div class="action-title">{{ a.target }} <span class="tag gray">{{ a.line }}</span></div>
+                  <div>{{ a.advice }}</div>
+                </div>
               </div>
             </div>
-            <div v-else class="hint">本周期暂无可归因机会</div>
+            <EmptyState v-else icon="check">暂无明确行动建议</EmptyState>
           </div>
-        </div>
-
-        <div class="card">
-          <div class="sec-title">下周期 TOP 行动</div>
-          <div v-if="topActions.length" class="action-grid">
-            <div v-for="a in topActions" :key="a.target + a.advice" class="action-card">
-              <div class="action-title">{{ a.target }} <span class="tag gray">{{ a.line }}</span></div>
-              <div class="dash-note">{{ '★'.repeat(a.stars || 1) }}</div>
-              <div>{{ a.advice }}</div>
-            </div>
-          </div>
-          <EmptyState v-else icon="check">暂无明确行动建议</EmptyState>
         </div>
       </div>
 
@@ -110,17 +110,17 @@
       </div>
 
       <div v-if="tab === 'creators'">
-        <div class="card-grid card-grid-4">
-          <div class="stat-card"><div class="stat-lbl">成长</div><div class="stat-num" style="color:var(--green)">{{ creatorSummary.growth || 0 }}</div></div>
-          <div class="stat-card"><div class="stat-lbl">值得培养</div><div class="stat-num" style="color:var(--blue)">{{ creatorSummary.cultivate || 0 }}</div></div>
-          <div class="stat-card"><div class="stat-lbl">瓶颈</div><div class="stat-num" style="color:var(--orange)">{{ creatorSummary.bottleneck || 0 }}</div></div>
-          <div class="stat-card"><div class="stat-lbl">观察</div><div class="stat-num">{{ creatorSummary.watch || 0 }}</div></div>
+        <div class="creator-summary-grid">
+          <div class="creator-summary-card growth"><span>成长创作者</span><b>{{ creatorSummary.growth || 0 }}</b><small>表现成熟，可优先加码</small></div>
+          <div class="creator-summary-card cultivate"><span>值得培养</span><b>{{ creatorSummary.cultivate || 0 }}</b><small>小样本潜力，继续测试</small></div>
+          <div class="creator-summary-card bottleneck"><span>瓶颈创作者</span><b>{{ creatorSummary.bottleneck || 0 }}</b><small>成本或播放表现需改善</small></div>
+          <div class="creator-summary-card watch"><span>观察名单</span><b>{{ creatorSummary.watch || 0 }}</b><small>表现中性，等待更多样本</small></div>
         </div>
-        <div class="dash-grid">
-          <CreatorGroup title="成长创作者" :rows="analysis.creator?.groups?.growth || []" />
-          <CreatorGroup title="值得培养" :rows="analysis.creator?.groups?.cultivate || []" />
-          <CreatorGroup title="瓶颈创作者" :rows="analysis.creator?.groups?.bottleneck || []" />
-          <CreatorGroup title="观察名单" :rows="analysis.creator?.groups?.watch || []" />
+        <div class="creator-segment-grid">
+          <CreatorGroup title="成长创作者" tone="growth" subtitle="效率与播放体量领先，适合增加合作" :rows="analysis.creator?.groups?.growth || []" />
+          <CreatorGroup title="值得培养" tone="cultivate" subtitle="已有潜力信号，建议控制成本继续测试" :rows="analysis.creator?.groups?.cultivate || []" />
+          <CreatorGroup title="瓶颈创作者" tone="bottleneck" subtitle="CPM 偏高或发布后播放不足，优先优化" :rows="analysis.creator?.groups?.bottleneck || []" />
+          <CreatorGroup title="观察名单" tone="watch" subtitle="当前结论不明确，继续积累发布样本" :rows="analysis.creator?.groups?.watch || []" />
         </div>
       </div>
 
@@ -208,7 +208,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, onMounted, ref } from 'vue'
 import { NCard, NDataTable } from 'naive-ui'
 import { apiGet, apiPost, apiPut, apiDelete } from '../utils/api.js'
 import { showToast, getUser } from '../stores/app.js'
@@ -217,9 +217,7 @@ import Modal from '../components/Modal.vue'
 import StatusTag from '../components/StatusTag.vue'
 import EmptyState from '../components/EmptyState.vue'
 import {
-  FlashOutline,
   PlayCircleOutline,
-  StatsChartOutline,
   TrendingUpOutline
 } from '@vicons/ionicons5'
 
@@ -246,16 +244,24 @@ const LayerTable = defineComponent({
 })
 
 const CreatorGroup = defineComponent({
-  props: { title: String, rows: { type: Array, default: () => [] } },
+  props: { title: String, subtitle: String, tone: String, rows: { type: Array, default: () => [] } },
   setup(props) {
-    return () => h(NCard, { class: 'card', bordered: false }, () => [
-      h('div', { class: 'sec-title' }, props.title),
+    return () => h('section', { class: ['creator-segment-panel', props.tone] }, [
+      h('div', { class: 'creator-segment-head' }, [
+        h('div', [h('h3', props.title), h('p', props.subtitle || '')]),
+        h('span', props.rows.length)
+      ]),
       props.rows.length
-        ? h('div', { class: 'compact-list' }, props.rows.map(r => h('div', { class: 'compact-item', key: r.id }, [
-            h('span', [h('b', r.name), h('small', ` · ${r.reason || ''}`)]),
-            h('span', { class: 'dash-note' }, `总播 ${fmt(r.totalPlay)} · ROI ${r.avgRoi ?? '—'}`)
+        ? h('div', { class: 'creator-segment-list' }, props.rows.map((r, index) => h('div', { class: 'creator-segment-row', key: r.id }, [
+            h('span', { class: 'creator-rank' }, index + 1),
+            h('div', { class: 'creator-segment-info' }, [h('b', r.name), h('p', r.reason || '暂无归类说明')]),
+            h('div', { class: 'creator-segment-metrics' }, [
+              h('span', [h('b', r.cpm == null ? '—' : '¥' + fmt(r.cpm)), h('small', 'CPM')]),
+              h('span', [h('b', r.published || 0), h('small', '发布')]),
+              h('span', [h('b', fmt(r.totalPlay)), h('small', '总播放')])
+            ])
           ])))
-        : h('div', { class: 'hint' }, '暂无数据')
+        : h('div', { class: 'creator-segment-empty' }, '当前分组暂无创作者')
     ])
   }
 })
@@ -295,14 +301,11 @@ const filters = ref({
   end: dateOffset(0),
   cycleMode: 'task'
 })
+const phases = ref([]), selectedPhaseId = ref(null), timeMode = ref('phase')
+const dateDraft = ref({ from: '', to: '' })
 
 const metrics = computed(() => analysis.value?.overview?.metrics || {})
-const campaignOptions = computed(() => campaigns.value.map(c => ({ label: c.name, value: c.id })))
-const cycleModeOptions = [
-  { label: '任务周期', value: 'task' },
-  { label: '自然月', value: 'month' },
-  { label: '自定义', value: 'custom' }
-]
+const selectedPhase = computed(() => phases.value.find(p => Number(p.id) === Number(selectedPhaseId.value)) || null)
 const boostOptions = [
   { label: '正向', value: 1 },
   { label: '避坑', value: -1 }
@@ -310,7 +313,6 @@ const boostOptions = [
 const categoryOptions = ['内容方向', '创作者合作', '发布时间', '平台策略', '其他'].map(v => ({ label: v, value: v }))
 const platformOptions = ['B站', '抖音', '微博', '小红书'].map(v => ({ label: v, value: v }))
 const confidenceOptions = ['高', '中', '低'].map(v => ({ label: v, value: v }))
-const oppSummary = computed(() => analysis.value?.opp?.summary || {})
 const creatorSummary = computed(() => analysis.value?.creator?.summary || {})
 const ruleInsights = computed(() => analysis.value?.insights?.rules || [])
 const currentAiMeta = computed(() => aiInsightMeta.value.lastAt ? aiInsightMeta.value : (analysis.value?.insights?.aiMeta || {}))
@@ -320,7 +322,7 @@ const lastAiInsightText = computed(() => {
   return `上次 AI：${fmtDateTime(meta.lastAt)}${meta.lastModel ? ` · ${meta.lastModel}` : ''}`
 })
 const topActions = computed(() => analysis.value?.resource?.top3 || [])
-const statCards = computed(() => [
+const totalStatCards = computed(() => [
   {
     key: 'published',
     label: '已发布内容',
@@ -336,31 +338,12 @@ const statCards = computed(() => [
     note: `互动 ${fmt(metrics.value.totalInteraction)}`,
     icon: TrendingUpOutline,
     tone: 'green'
-  },
-  {
-    key: 'roi',
-    label: '平均 ROI7',
-    value: metrics.value.avgRoi7 || 0,
-    note: '目标 ≥ 0.8',
-    icon: StatsChartOutline,
-    tone: 'gold',
-    color: metricColor(metrics.value.avgRoi7, 0.8)
-  },
-  {
-    key: 'activation',
-    label: '平均激活率',
-    value: pct(metrics.value.avgActivation),
-    note: '目标 ≥ 3%',
-    icon: FlashOutline,
-    tone: 'red',
-    color: metricColor(metrics.value.avgActivation, 3)
   }
 ])
-const topOpps = computed(() => [
-  ...(analysis.value?.opp?.groups?.verified || []),
-  ...(analysis.value?.opp?.groups?.partial || []),
-  ...(analysis.value?.opp?.groups?.failed || [])
-].slice(0, 5))
+const platformStatCards = computed(() => [
+  { key: 'bili', label: 'B站', published: metrics.value.platforms?.['B站'] || 0, play: fmt(metrics.value.platformPlays?.['B站'] || 0) },
+  { key: 'douyin', label: '抖音', published: metrics.value.platforms?.['抖音'] || 0, play: fmt(metrics.value.platformPlays?.['抖音'] || 0) }
+])
 
 const platformRows = computed(() => {
   const platforms = metrics.value.platforms || {}
@@ -374,6 +357,39 @@ function dateOffset(days) {
   const d = new Date()
   d.setDate(d.getDate() + days)
   return d.toISOString().slice(0, 10)
+}
+function previousDate(date) {
+  const d = new Date(`${date}T00:00:00`)
+  d.setDate(d.getDate() - 1)
+  return d.toISOString().slice(0, 10)
+}
+function phaseMonth(date) {
+  const value = String(date || '')
+  return /^\d{4}-\d{2}/.test(value) ? `${Number(value.slice(5, 7))}月` : '未定期'
+}
+async function selectAnalysisPhase(phase) {
+  timeMode.value = 'phase'
+  selectedPhaseId.value = phase.id
+  filters.value.campaignId = phase.id
+  filters.value.start = phase.phase_start
+  filters.value.end = phase.phase_end_exclusive ? previousDate(phase.phase_end_exclusive) : dateOffset(0)
+  filters.value.cycleMode = 'task'
+  dateDraft.value = { from: filters.value.start, to: filters.value.end }
+  await loadDashboard()
+}
+async function applyAnalysisTime() {
+  if (!dateDraft.value.from) return showToast('请选择开始日期', true)
+  if (dateDraft.value.to && dateDraft.value.to < dateDraft.value.from) return showToast('结束日期不能早于开始日期', true)
+  timeMode.value = 'custom'
+  filters.value.campaignId = ''
+  filters.value.start = dateDraft.value.from
+  filters.value.end = dateDraft.value.to || dateOffset(0)
+  filters.value.cycleMode = 'custom'
+  await loadDashboard()
+}
+async function clearAnalysisTime() {
+  dateDraft.value = { from: '', to: '' }
+  if (selectedPhase.value) await selectAnalysisPhase(selectedPhase.value)
 }
 
 function fmtDateTime(value) {
@@ -402,7 +418,11 @@ function queryString() {
 }
 
 async function loadCampaigns() {
-  try { campaigns.value = await apiGet('/campaigns') } catch (e) { /* ignore */ }
+  try {
+    const [campaignList, phaseList] = await Promise.all([apiGet('/campaigns'), apiGet('/creators/phases')])
+    campaigns.value = campaignList
+    phases.value = phaseList || []
+  } catch (e) { /* ignore */ }
 }
 
 async function loadDashboard() {
@@ -487,10 +507,7 @@ async function del(id) {
 
 onMounted(async () => {
   await Promise.all([loadCampaigns(), loadExperiences()])
-  loadDashboard()
+  if (phases.value.length) await selectAnalysisPhase(phases.value[0])
+  else loadDashboard()
 })
-
-watch(filters, () => {
-  loadDashboard()
-}, { deep: true })
 </script>

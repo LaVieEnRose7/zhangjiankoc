@@ -77,6 +77,15 @@ async function fetchBili(mid) {
     if (j && j.code === 0 && j.data) {
       return { ok: true, name: j.data.name, fans: Number(j.data.follower) || 0, platform: 'B站' };
     }
+    // 资料接口可能触发 -799 风控；粉丝统计接口无需 WBI，作为稳定回退。
+    const statUrl = `https://api.bilibili.com/x/relation/stat?vmid=${encodeURIComponent(mid)}`;
+    const statResp = await fetchWithTimeout(statUrl, {
+      headers: { 'User-Agent': UA, 'Referer': `https://space.bilibili.com/${mid}`, 'Accept': 'application/json' }
+    });
+    const stat = await statResp.json();
+    if (stat && stat.code === 0 && stat.data) {
+      return { ok: true, name: null, fans: Number(stat.data.follower) || 0, platform: 'B站' };
+    }
     return { ok: false, error: 'bili api code ' + (j && j.code), platform: 'B站' };
   } catch (e) {
     return { ok: false, error: e.message, platform: 'B站' };

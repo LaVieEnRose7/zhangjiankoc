@@ -186,7 +186,6 @@ function recommendCreators(opportunity, hotspot, campaign, limit = 3) {
       else { s -= 10; why.push(`历史ROI7=${c.avg_roi7}偏低`); }
     }
     if (c.avg_activation != null && c.avg_activation >= 3) { s += 10; why.push(`激活率${c.avg_activation}%`); }
-    if (c.coop_count >= 3) { s += 5; why.push('多次合作稳定'); }
     if (c.avg_play >= 50000) s += 5;
     return { creator: c, score: s, reason: why.join('，') || '基础数据一般' };
   }).filter(x => x.score > 0).sort((x, y) => y.score - x.score);
