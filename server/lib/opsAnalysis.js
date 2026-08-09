@@ -64,10 +64,35 @@ function normGoal(s) {
   return s.trim() || '未标注';
 }
 
+function normCreatorName(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s　·・_.\-—–（）()【】\[\]]+/g, '');
+}
+
+function buildCreatorResolver(db) {
+  const exact = new Map();
+  const byName = new Map();
+  const put = (name, platform, id) => {
+    const normalized = normCreatorName(name);
+    if (!normalized || !id) return;
+    if (platform) exact.set(`${String(platform).trim()}|${normalized}`, Number(id));
+    if (!byName.has(normalized)) byName.set(normalized, Number(id));
+    else if (byName.get(normalized) !== Number(id)) byName.set(normalized, null);
+  };
+  db.prepare('SELECT id,name,platform FROM creators').all().forEach(row => put(row.name, row.platform, row.id));
+  db.prepare('SELECT creator_id,account_name,platform FROM creator_accounts').all().forEach(row => put(row.account_name, row.platform, row.creator_id));
+  return (creatorId, creatorName, platform) => {
+    if (Number(creatorId)) return Number(creatorId);
+    const normalized = normCreatorName(creatorName);
+    if (!normalized) return null;
+    return exact.get(`${String(platform || '').trim()}|${normalized}`) || byName.get(normalized) || null;
+  };
+}
+
 // ---------- 取内容条目 ----------
 function getContentItems(db, { campaignId, start, end }) {
   start = start || '1970-01-01'; end = end || '2999-12-31';
   const items = [];
+  const resolveCreator = buildCreatorResolver(db);
   const exRows = db.prepare(`
     SELECT e.*, o.campaign_id AS op_campaign, o.direction AS op_direction, o.play_method AS op_play,
            o.title AS op_title, c.platform AS creator_platform
@@ -82,7 +107,7 @@ function getContentItems(db, { campaignId, start, end }) {
     items.push({
       source: 'ex', id: r.id, title: r.op_title || ('执行#' + r.id),
       platform: r.creator_platform || 'B站',
-      creator_id: r.creator_id, creator_name: r.creator_name,
+      creator_id: resolveCreator(r.creator_id, r.creator_name, r.creator_platform), creator_name: r.creator_name,
       opportunity_id: r.opportunity_id, campaign_id: r.op_campaign,
       content_type: normContentType(r.exec_play_method || r.op_direction || r.op_play),
       play_method: normPlay(r.exec_play_method || r.op_play),
@@ -100,7 +125,7 @@ function getContentItems(db, { campaignId, start, end }) {
   for (const r of caRows) {
     items.push({
       source: 'case', id: r.id, title: r.title,
-      platform: r.platform, creator_id: r.creator_id, creator_name: r.creator_name,
+      platform: r.platform, creator_id: resolveCreator(r.creator_id, r.creator_name, r.platform), creator_name: r.creator_name,
       opportunity_id: r.linked_opportunity_id, campaign_id: r.campaign_id,
       content_type: normContentType(r.content_type || r.copy || r.raw_content || r.title),
       play_method: normPlay(r.play_method || r.copy || r.title),
