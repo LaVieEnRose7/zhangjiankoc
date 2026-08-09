@@ -141,8 +141,8 @@
         <div class="drawer-body">
           <div class="detail-metrics">
             <div><b>{{ fmt(selectedCreator?.fans) }}</b><span>粉丝</span></div>
-            <div><b>{{ fmt(selectedCreator?.avg_play) }}</b><span>均播</span></div>
-            <div><b>{{ cpm(selectedCreator) }}</b><span>预估 CPM</span></div>
+            <div><b>{{ fmt(publishedData ? pubSummary.avg_play : selectedCreator?.avg_play) }}</b><span>均播</span></div>
+            <div><b>{{ cpm(selectedCreator, publishedData ? pubSummary.avg_play : null) }}</b><span>预估 CPM</span></div>
           </div>
           <div class="detail-section">
             <div class="section-title-row">

@@ -51,7 +51,7 @@
           <n-card
             v-for="s in totalStatCards"
             :key="s.key"
-            class="ops-total-card"
+            :class="['ops-total-card', s.key]"
             :bordered="false"
           >
             <div class="ops-stat-head">
@@ -69,8 +69,8 @@
               <span class="tag gray">本周期</span>
             </div>
             <div class="ops-platform-metrics">
-              <div><b>{{ p.published }}</b><span>发布条数</span></div>
-              <div><b>{{ p.play }}</b><span>播放量</span></div>
+              <div class="play-metric"><b :title="p.playExact">{{ p.play }}</b><span>总播放量</span></div>
+              <div class="published-metric"><b>{{ p.published }}</b><span>发布条数</span></div>
             </div>
           </n-card>
         </div>
@@ -341,8 +341,8 @@ const totalStatCards = computed(() => [
   }
 ])
 const platformStatCards = computed(() => [
-  { key: 'bili', label: 'B站', published: metrics.value.platforms?.['B站'] || 0, play: fmt(metrics.value.platformPlays?.['B站'] || 0) },
-  { key: 'douyin', label: '抖音', published: metrics.value.platforms?.['抖音'] || 0, play: fmt(metrics.value.platformPlays?.['抖音'] || 0) }
+  { key: 'bili', label: 'B站', published: metrics.value.platforms?.['B站'] || 0, play: fmt(metrics.value.platformPlays?.['B站'] || 0), playExact: `B站总播放：${fmt(metrics.value.platformPlays?.['B站'] || 0)}` },
+  { key: 'douyin', label: '抖音', published: metrics.value.platforms?.['抖音'] || 0, play: fmt(metrics.value.platformPlays?.['抖音'] || 0), playExact: `抖音总播放：${fmt(metrics.value.platformPlays?.['抖音'] || 0)}` }
 ])
 
 const platformRows = computed(() => {
