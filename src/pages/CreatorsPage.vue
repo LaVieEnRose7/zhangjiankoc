@@ -6,7 +6,7 @@
         <n-button secondary :loading="loading" @click="load">{{ loading ? '刷新中...' : '刷新' }}</n-button>
         <n-button secondary :loading="syncingFans" @click="syncAllFans">{{ syncingFans ? `同步中 ${syncProgress.done}/${syncProgress.total || '…'}` : '同步全部粉丝' }}</n-button>
         <n-button type="primary" @click="openForm()">+ 添加创作者</n-button>
-        <n-button secondary @click="showImport = true">导入名单</n-button>
+        <n-button secondary @click="openCreatorImport">导入名单及付费</n-button>
       </div>
     </div>
 
@@ -59,7 +59,7 @@
     <div class="filter-bar">
       <n-select v-model:value="filters.platform" :options="platformFilterOptions" placeholder="平台-全部" clearable />
       <n-input class="q" v-model:value="filters.q" placeholder="搜索名称/标签" clearable />
-      <n-button size="small" secondary @click="filters = { platform: '', q: '' }">重置</n-button>
+      <n-button size="small" secondary @click="resetCreatorFilters">重置</n-button>
       <n-button v-if="checkedCreatorIds.length" size="small" type="error" secondary @click="batchDelete">
         批量删除 {{ checkedCreatorIds.length }}
       </n-button>
@@ -80,6 +80,7 @@
       :bordered="false"
       :single-line="false"
       :row-key="row => row.id"
+      @update:sorter="handleCreatorTableSort"
     />
     <div v-if="filtered.length" class="list-pagination">
       <span>共 {{ filtered.length }} 位 · 每页 15 位</span>
@@ -117,6 +118,11 @@
 
     <Modal :show="showImport" @close="showImport = false">
       <template #head><h3>导入创作者名单</h3></template>
+      <div class="import-phase-notice">
+        <span>付费归属阶段</span>
+        <b>{{ selectedPhase?.name || '未选择阶段' }}</b>
+        <small>{{ selectedPhase?.phase_start || '—' }} 开始 · 模板填写“阶段付费金额（元）”后自动计算 CPM</small>
+      </div>
       <div class="form-row">
         <label>选择 Excel (.xlsx) 或 CSV 文件</label>
         <n-upload :default-upload="false" accept=".xlsx,.csv" :max="1" @change="handleImportChange">
@@ -166,7 +172,6 @@
                 <div><b>{{ fmt(pubSummary.avg_play) }}</b><span>平均播放</span></div>
                 <div><b>{{ pubSummary.cpm == null ? '—' : `¥${fmt(pubSummary.cpm)}` }}</b><span>阶段 CPM</span></div>
                 <div><b>{{ pubSummary.paid_amount == null ? '—' : `¥${fmt(pubSummary.paid_amount)}` }}</b><span>阶段付费</span></div>
-                <div><b>{{ pubSummary.avg_activation ?? '—' }}</b><span>平均激活率</span></div>
                 <div><b>{{ fmt(pubSummary.high_count) }}</b><span>高表现</span></div>
                 <div><b>{{ fmt(pubSummary.benchmark_count) }}</b><span>达标内容</span></div>
                 <div><b>{{ fmtDate(pubSummary.latest_publish_date) }}</b><span>最近发布</span></div>
@@ -225,7 +230,6 @@
         <div><span>阶段总播放</span><b>{{ fmt(phaseMetric(phaseCostCreator).total_play) }}</b></div>
       </div>
       <div class="form-row"><label>本阶段实际付费金额（元）*</label><n-input-number v-model:value="phaseCostForm.paid_amount" :min="0" :precision="2" style="width:100%" placeholder="例如：5000" /></div>
-      <div class="form-row"><label>备注</label><n-input v-model:value="phaseCostForm.note" placeholder="例如：七月活动阶段合作费用" /></div>
       <div class="phase-cpm-preview">
         <span>预计 CPM</span><b>{{ phaseCostPreview }}</b>
         <small>付费金额 ÷ 阶段总播放 × 1000</small>
@@ -271,8 +275,9 @@ const syncProgress = ref({ done: 0, total: 0 })
 const detailVisible = ref(false), selectedCreator = ref(null)
 const checkedCreatorIds = ref([])
 const creatorPage = ref(1), pageSize = 15
+const creatorSort = ref({ key: 'total_play', order: 'desc' })
 const publishedData = ref(null), publishedLoading = ref(false), publishedError = ref(''), rematching = ref(false)
-const showPhaseCost = ref(false), savingPhaseCost = ref(false), phaseCostCreator = ref(null), phaseCostForm = ref({ paid_amount: null, note: '' })
+const showPhaseCost = ref(false), savingPhaseCost = ref(false), phaseCostCreator = ref(null), phaseCostForm = ref({ paid_amount: null })
 const showStrengthAnalysis = ref(false), analyzingStrengths = ref(false), savingStrengths = ref(false)
 const strengthAnalysis = ref({}), strengthCategoriesDraft = ref('')
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
@@ -285,7 +290,19 @@ const filtered = computed(() => {
   if (selectedPhaseId.value) l = l.filter(c => phaseMetric(c).content_count > 0)
   if (filters.value.platform) l = l.filter(c => c.platform === filters.value.platform)
   if (filters.value.q) { const q = filters.value.q.toLowerCase(); l = l.filter(c => (c.name + ' ' + (c.categories || '')).toLowerCase().includes(q)) }
-  return l
+  const direction = creatorSort.value.order === 'asc' ? 1 : -1
+  const key = creatorSort.value.key
+  return [...l].sort((a, b) => {
+    if (key === 'name') return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN') * direction
+    const value = row => {
+      if (key === 'fans') return Number(row.fans) || 0
+      const metric = phaseMetric(row)
+      if (key === 'avg_play' && !selectedPhaseId.value) return Number(row.avg_play) || 0
+      const metricKey = { total_play: 'total_play', avg_play: 'avg_play', content_count: 'content_count', cpm: 'cpm' }[key]
+      return Number(metric[metricKey]) || 0
+    }
+    return (value(a) - value(b)) * direction
+  })
 })
 const creatorTotalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 const pagedCreators = computed(() => filtered.value.slice((creatorPage.value - 1) * pageSize, creatorPage.value * pageSize))
@@ -293,27 +310,47 @@ const creatorPageNumbers = computed(() => {
   const start = Math.max(1, Math.min(creatorPage.value - 2, creatorTotalPages.value - 4))
   return Array.from({ length: Math.min(5, creatorTotalPages.value) }, (_, i) => start + i)
 })
-watch([filters, selectedPhaseId, timeMode, customDateFrom, customDateTo], () => { creatorPage.value = 1 }, { deep: true })
+watch([filters, creatorSort, selectedPhaseId, timeMode, customDateFrom, customDateTo], () => { creatorPage.value = 1 }, { deep: true })
+function resetCreatorFilters() {
+  filters.value = { platform: '', q: '' }
+  creatorSort.value = { key: 'total_play', order: 'desc' }
+}
 const pubSummary = computed(() => publishedData.value?.summary || {})
 const publishedItems = computed(() => publishedData.value?.items || [])
+const creatorSortValue = (row, key) => {
+  if (key === 'fans') return Number(row.fans) || 0
+  const metric = phaseMetric(row)
+  if (key === 'avg_play' && !selectedPhaseId.value) return Number(row.avg_play) || 0
+  const metricKey = { total_play: 'total_play', avg_play: 'avg_play', content_count: 'content_count', cpm: 'cpm' }[key]
+  return Number(metric[metricKey]) || 0
+}
+const creatorSortProps = key => ({
+  sorter: key === 'name'
+    ? (a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN')
+    : (a, b) => creatorSortValue(a, key) - creatorSortValue(b, key),
+  sortOrder: creatorSort.value.key === key ? (creatorSort.value.order === 'asc' ? 'ascend' : 'descend') : false
+})
+function handleCreatorTableSort(sorter) {
+  if (!sorter || !sorter.order) creatorSort.value = { key: 'total_play', order: 'desc' }
+  else creatorSort.value = { key: sorter.columnKey, order: sorter.order === 'ascend' ? 'asc' : 'desc' }
+}
 const creatorColumns = computed(() => [
   { type: 'selection', width: 44 },
   {
     title: '创作者',
     key: 'name',
+    ...creatorSortProps('name'),
     minWidth: 140,
     render: row => h('span', { class: 'row-link', onClick: () => openDetail(row) }, row.name)
   },
   { title: '平台', key: 'platform', width: 92, render: row => row.platform || '—' },
-  { title: '粉丝', key: 'fans', width: 110, render: row => fmt(row.fans) },
-  { title: '发布数', key: 'phase_content_count', width: 76, render: row => phaseMetric(row).content_count },
-  { title: '总播放', key: 'phase_total_play', width: 105, render: row => fmt(phaseMetric(row).total_play) },
-  { title: '均播放', key: 'avg_play', width: 105, render: row => fmt(selectedPhaseId.value ? phaseMetric(row).avg_play : row.avg_play) },
-  { title: '平均激活', key: 'phase_activation', width: 90, render: row => phaseMetric(row).avg_activation == null ? '—' : `${phaseMetric(row).avg_activation}%` },
-  { title: '平均 ROI', key: 'phase_roi', width: 86, render: row => phaseMetric(row).avg_roi7 ?? '—' },
+  { title: '粉丝', key: 'fans', width: 120, ...creatorSortProps('fans'), render: row => fmt(row.fans) },
+  { title: '发布数', key: 'content_count', width: 90, ...creatorSortProps('content_count'), render: row => phaseMetric(row).content_count },
+  { title: '总播放', key: 'total_play', width: 115, ...creatorSortProps('total_play'), render: row => fmt(phaseMetric(row).total_play) },
+  { title: '均播放', key: 'avg_play', width: 115, ...creatorSortProps('avg_play'), render: row => fmt(selectedPhaseId.value ? phaseMetric(row).avg_play : row.avg_play) },
   { title: '高表现', key: 'phase_high', width: 76, render: row => phaseMetric(row).high_count },
   { title: '擅长方向', key: 'categories', minWidth: 180, render: row => h('span', { class: 'muted-cell' }, row.categories || '—') },
-  { title: '阶段 CPM', key: 'cpm', width: 120, render: row => h(NButton, { size: 'small', text: true, type: 'primary', disabled: timeMode.value !== 'phase', onClick: () => openPhaseCost(row) }, () => phaseCpm(row)) },
+  { title: '阶段 CPM', key: 'cpm', width: 135, ...creatorSortProps('cpm'), render: row => h(NButton, { size: 'small', text: true, type: 'primary', disabled: timeMode.value !== 'phase', onClick: () => openPhaseCost(row) }, () => phaseCpm(row)) },
   {
     title: '操作',
     key: 'actions',
@@ -501,10 +538,10 @@ const phaseCostPreview = computed(() => {
 async function openPhaseCost(creator) {
   if (!creator || timeMode.value !== 'phase' || !selectedPhaseId.value) return showToast('请先选择营销任务阶段', true)
   phaseCostCreator.value = creator
-  phaseCostForm.value = { paid_amount: phaseMetric(creator).paid_amount, note: '' }
+  phaseCostForm.value = { paid_amount: phaseMetric(creator).paid_amount }
   try {
     const saved = await apiGet(`/creators/${creator.id}/phase-cost?campaign_id=${selectedPhaseId.value}`)
-    phaseCostForm.value = { paid_amount: saved.paid_amount, note: saved.note || '' }
+    phaseCostForm.value = { paid_amount: saved.paid_amount }
     showPhaseCost.value = true
   } catch (e) { showToast(e.message, true) }
 }
@@ -592,15 +629,20 @@ async function batchDelete() {
 }
 async function doImport() {
   if (!importFile.value) return
+  if (timeMode.value !== 'phase' || !selectedPhaseId.value) return showToast('请先选择付费对应的营销阶段', true)
   importing.value = true
   try {
-    await apiUpload('/import/creators', importFile.value)
+    const result = await apiUpload(`/import/creators?campaign_id=${selectedPhaseId.value}`, importFile.value)
     showImport.value = false
     importFile.value = null
-    showToast('导入成功')
-    load()
+    showToast(`导入成功：新增 ${result.inserted || 0} 位，匹配已有 ${result.updated || 0} 位，录入阶段付费 ${result.paymentImported || 0} 位`)
+    await load()
   } catch (e) { showToast(e.message, true) }
   finally { importing.value = false }
+}
+function openCreatorImport() {
+  if (timeMode.value !== 'phase' || !selectedPhaseId.value) return showToast('请先点击选择付费对应的营销阶段', true)
+  showImport.value = true
 }
 function handleImportChange({ file }) {
   importFile.value = file?.file || null

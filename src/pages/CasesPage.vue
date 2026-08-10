@@ -70,6 +70,8 @@
             <div><b>{{ fmt(item.play_count) }}</b><span>播放</span></div>
             <div><b>{{ fmt(item.like_count) }}</b><span>点赞</span></div>
             <div><b>{{ fmt(item.comment_count) }}</b><span>评论</span></div>
+            <div><b>{{ fmt(item.favorite_count) }}</b><span>收藏</span></div>
+            <div><b>{{ fmt(item.share_count) }}</b><span>分享</span></div>
           </div>
           <div class="case-mobile-actions" @click.stop>
             <n-button size="small" secondary :disabled="busyId === item.id" @click="toggleFavorite(item)">{{ item.is_favorite ? '取消收藏' : '收藏' }}</n-button>
@@ -86,6 +88,7 @@
         :bordered="false"
         :single-line="false"
         :row-key="row => row.id"
+        @update:sorter="handleCaseTableSort"
         table-layout="fixed"
       />
       <div v-if="filtered.length" class="list-pagination">
@@ -143,6 +146,8 @@
         <div class="form-row"><label>播放量</label><n-input-number v-model:value="form.play_count" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>点赞</label><n-input-number v-model:value="form.like_count" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>评论</label><n-input-number v-model:value="form.comment_count" :min="0" style="width:100%" /></div>
+        <div class="form-row"><label>收藏</label><n-input-number v-model:value="form.favorite_count" :min="0" style="width:100%" /></div>
+        <div class="form-row"><label>分享</label><n-input-number v-model:value="form.share_count" :min="0" style="width:100%" /></div>
         <div class="form-row full"><label>总结</label><n-input v-model:value="form.summary" type="textarea" /></div>
       </div>
       <template #foot><n-button type="primary" :loading="saving" @click="saveCase">{{ saving ? '保存中...' : '保存' }}</n-button></template>
@@ -169,6 +174,7 @@
             <div><b>{{ fmt(selectedCase?.comment_count) }}</b><span>评论</span></div>
             <div><b>{{ fmt(selectedCase?.favorite_count) }}</b><span>收藏</span></div>
             <div><b>{{ fmt(selectedCase?.like_count) }}</b><span>点赞</span></div>
+            <div><b>{{ fmt(selectedCase?.share_count) }}</b><span>分享</span></div>
           </div>
           <div class="detail-section">
             <h3>内容信息</h3>
@@ -212,6 +218,7 @@ const ratingForm = ref({ ...defaultRatingRules })
 const showRatingRules = ref(false), savingRules = ref(false)
 const checkedCaseIds = ref([])
 const casePage = ref(1), pageSize = 15
+const caseSort = ref({ key: 'publish_date', order: 'desc' })
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1280)
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
 const platformFilterOptions = platformOptions.filter(o => o.value !== '其他')
@@ -236,7 +243,13 @@ const filtered = computed(() => {
   if (filters.value.date_from) l = l.filter(c => c.publish_date && String(c.publish_date).slice(0, 10) >= filters.value.date_from)
   if (filters.value.date_to) l = l.filter(c => c.publish_date && String(c.publish_date).slice(0, 10) <= filters.value.date_to)
   if (filters.value.q) { const q = filters.value.q.toLowerCase(); l = l.filter(c => (c.title + ' ' + (c.creator_name || '')).toLowerCase().includes(q)) }
-  return l
+  const direction = caseSort.value.order === 'asc' ? 1 : -1
+  const key = caseSort.value.key
+  return [...l].sort((a, b) => {
+    if (key === 'title') return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN') * direction
+    if (key === 'publish_date') return String(a.publish_date || '').localeCompare(String(b.publish_date || '')) * direction
+    return ((Number(a[key]) || 0) - (Number(b[key]) || 0)) * direction
+  })
 })
 const caseTotalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 const pagedCases = computed(() => filtered.value.slice((casePage.value - 1) * pageSize, casePage.value * pageSize))
@@ -244,7 +257,7 @@ const casePageNumbers = computed(() => {
   const start = Math.max(1, Math.min(casePage.value - 2, caseTotalPages.value - 4))
   return Array.from({ length: Math.min(5, caseTotalPages.value) }, (_, i) => start + i)
 })
-watch([tab, filters], () => { casePage.value = 1 }, { deep: true })
+watch([tab, filters, caseSort], () => { casePage.value = 1 }, { deep: true })
 function applyDateFilter() {
   if (!dateDraft.value.from) return showToast('请选择开始日期', true)
   if (dateDraft.value.to && dateDraft.value.to < dateDraft.value.from) return showToast('结束日期不能早于开始日期', true)
@@ -258,6 +271,7 @@ function clearDateFilter() {
 }
 function resetFilters() {
   filters.value = { platform: '', result: '', date_from: '', date_to: '', q: '' }
+  caseSort.value = { key: 'publish_date', order: 'desc' }
   dateDraft.value = { from: '', to: '' }
 }
 const isCompactCaseList = computed(() => viewportWidth.value < 760)
@@ -266,12 +280,21 @@ const caseActions = row => h(NSpace, { size: 6, wrap: false, class: 'case-action
   h(NButton, { size: 'tiny', secondary: true, disabled: busyId.value === row.id, onClick: () => toggleFavorite(row) }, () => row.is_favorite ? '取消收藏' : '收藏'),
   h(NButton, { size: 'tiny', type: 'error', secondary: true, disabled: busyId.value === row.id, onClick: () => del(row.id) }, () => '删除')
 ])
+const caseSortProps = (key, compare) => ({
+  sorter: compare,
+  sortOrder: caseSort.value.key === key ? (caseSort.value.order === 'asc' ? 'ascend' : 'descend') : false
+})
+function handleCaseTableSort(sorter) {
+  if (!sorter || !sorter.order) caseSort.value = { key: 'publish_date', order: 'desc' }
+  else caseSort.value = { key: sorter.columnKey, order: sorter.order === 'ascend' ? 'asc' : 'desc' }
+}
 const caseColumns = computed(() => {
   const columns = [
   { type: 'selection', width: 44 },
   {
     title: '标题',
     key: 'title',
+    ...caseSortProps('title', (a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')),
     width: isMediumCaseTable.value ? 210 : 280,
     render: row => h('div', { class: 'case-title-cell' }, [
       h('span', { class: 'row-link', onClick: () => openDetail(row) }, row.title),
@@ -282,8 +305,12 @@ const caseColumns = computed(() => {
   },
   { title: '平台', key: 'platform', width: 76, render: row => row.platform || '—' },
   { title: '创作者', key: 'creator_name', width: 108, render: row => row.creator_name || '—' },
-  { title: '发布日', key: 'publish_date', width: 98, render: row => fmtDate(row.publish_date) },
-  { title: '播放量', key: 'play_count', width: 94, render: row => fmt(row.play_count) },
+  { title: '发布日', key: 'publish_date', width: 108, ...caseSortProps('publish_date', (a, b) => String(a.publish_date || '').localeCompare(String(b.publish_date || ''))), render: row => fmtDate(row.publish_date) },
+  { title: '播放量', key: 'play_count', width: 104, ...caseSortProps('play_count', (a, b) => (Number(a.play_count) || 0) - (Number(b.play_count) || 0)), render: row => fmt(row.play_count) },
+  { title: '点赞', key: 'like_count', width: 88, ...caseSortProps('like_count', (a, b) => (Number(a.like_count) || 0) - (Number(b.like_count) || 0)), render: row => fmt(row.like_count) },
+  { title: '评论', key: 'comment_count', width: 88, ...caseSortProps('comment_count', (a, b) => (Number(a.comment_count) || 0) - (Number(b.comment_count) || 0)), render: row => fmt(row.comment_count) },
+  { title: '收藏', key: 'favorite_count', width: 88, ...caseSortProps('favorite_count', (a, b) => (Number(a.favorite_count) || 0) - (Number(b.favorite_count) || 0)), render: row => fmt(row.favorite_count) },
+  { title: '分享', key: 'share_count', width: 88, ...caseSortProps('share_count', (a, b) => (Number(a.share_count) || 0) - (Number(b.share_count) || 0)), render: row => fmt(row.share_count) },
   { title: '效果', key: 'result', width: 74, render: row => h(StatusTag, { text: row.result || '一般' }) },
   {
     title: '操作',
@@ -332,7 +359,7 @@ async function saveRatingRules() {
 }
 function openForm(c = null) {
   editing.value = c
-  form.value = c ? { ...c } : { title: '', platform: 'B站', creator_name: '', url: '', publish_date: '', content_type: '', play_count: 0, like_count: 0, comment_count: 0, summary: '' }
+  form.value = c ? { ...c } : { title: '', platform: 'B站', creator_name: '', url: '', publish_date: '', content_type: '', play_count: 0, like_count: 0, comment_count: 0, favorite_count: 0, share_count: 0, summary: '' }
   showForm.value = true
 }
 function openDetail(c) {

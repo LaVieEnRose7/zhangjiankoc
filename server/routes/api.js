@@ -1770,7 +1770,7 @@ router.post('/reviews/:id/confirm', (req, res) => {
 // 模板列定义
 const IMPORT_MAP = {
   hotspots: { cols: { '热点标题': 'title', '来源平台': 'source_label', '平台': 'platform', '分类': 'category', '热度': 'heat', '趋势': 'trend', '预计有效期': 'valid_until', '初步相关性': 'relevance', '风险提示': 'risk_note', '链接': 'url', '描述': 'description', '标签': 'tags' }, required: 'title' },
-  creators: { cols: { '昵称': 'name', '主发平台': 'main_platform', '主发平台主页链接': 'main_home_url', '分发平台昵称': 'dist_nickname', '分发平台': 'dist_platform', '分发平台主页链接': 'dist_home_url' }, required: 'name' },
+  creators: { cols: { '昵称': 'name', '主发平台': 'main_platform', '主发平台主页链接': 'main_home_url', '分发平台昵称': 'dist_nickname', '分发平台': 'dist_platform', '分发平台主页链接': 'dist_home_url', '阶段付费金额（元）': 'phase_paid_amount' }, required: 'name' },
   cases: { cols: { '平台': 'platform', '达人昵称': 'creator_name', 'ID': 'creator_platform_id', '视频发布时间': 'publish_date', '视频链接': 'url', '播放数': 'play_count', '粉丝数': 'fans', '视频文案': 'copy', '点赞数': 'like_count', '评论数': 'comment_count', '收藏数': 'favorite_count', '分享数': 'share_count' }, required: 'creator_name' },
   executions: { cols: { '机会ID': 'opportunity_id', '创作者': 'creator_name', '主页链接': 'home_url', '阶段': 'stage', '发布链接': 'publish_url', '发布日期': 'publish_date', '播放量': 'play_count', '点赞': 'like_count', '评论': 'comment_count', '首日激活率': 'activation_d1', '7日ROI': 'roi_d7', '成本': 'cost', '收入': 'income', '备注': 'note' }, required: 'opportunity_id' }
 };
@@ -1826,7 +1826,18 @@ router.post('/import/:type', upload.single('file'), (req, res) => {
 
     const db = getDb();
     const cols = TABLES[req.params.type];
-    let inserted = 0, skipped = 0;
+    let inserted = 0, updated = 0, skipped = 0, paymentImported = 0;
+    const importCampaignId = Number(req.query.campaign_id) || null;
+    if (req.params.type === 'creators' && importCampaignId) {
+      const campaign = db.prepare('SELECT id FROM campaigns WHERE id=?').get(importCampaignId);
+      if (!campaign) return fail(res, '所选营销阶段不存在', 400);
+    }
+    if (req.params.type === 'creators') {
+      const paymentRows = rows.filter(row => row['阶段付费金额（元）'] !== undefined && row['阶段付费金额（元）'] !== '');
+      if (paymentRows.length && !importCampaignId) return fail(res, '模板包含阶段付费金额，请先选择营销阶段后再导入', 400);
+      const invalid = paymentRows.find(row => !Number.isFinite(Number(row['阶段付费金额（元）'])) || Number(row['阶段付费金额（元）']) < 0);
+      if (invalid) return fail(res, `${invalid['昵称'] || '某位创作者'} 的阶段付费金额格式不正确`, 400);
+    }
     for (const row of rows) {
       const record = {};
       for (const [cn, en] of Object.entries(map.cols)) {
@@ -1853,10 +1864,28 @@ router.post('/import/:type', upload.single('file'), (req, res) => {
           record.title = base ? base.slice(0, 20) : `${record.creator_name || '未知达人'} 的发布`;
         }
       }
+      let existingCreatorId = null;
+      if (req.params.type === 'creators') {
+        existingCreatorId = resolveCreatorId(db, {
+          creator_name: record.name,
+          platform: record.main_platform,
+          home_url: record.main_home_url
+        });
+        if (!existingCreatorId) {
+          const sameName = db.prepare('SELECT id,name FROM creators').all().find(item => normName(item.name) === normName(record.name));
+          existingCreatorId = sameName ? sameName.id : null;
+        }
+      }
       const useCols = cols.filter(c => record[c] !== undefined);
-      const r = db.prepare(`INSERT INTO ${req.params.type} (${useCols.join(',')}) VALUES (${useCols.map(() => '?').join(',')})`)
-        .run(...useCols.map(c => record[c]));
-      inserted++;
+      let r;
+      if (existingCreatorId) {
+        r = { lastInsertRowid: existingCreatorId };
+        updated++;
+      } else {
+        r = db.prepare(`INSERT INTO ${req.params.type} (${useCols.join(',')}) VALUES (${useCols.map(() => '?').join(',')})`)
+          .run(...useCols.map(c => record[c]));
+        inserted++;
+      }
       // 案例导入：按播放数据自动判定结果（系统替用户判断，非手动选择）
       if (req.params.type === 'cases') {
         db.prepare('UPDATE cases SET result=? WHERE id=?').run(judgeCaseResult(record), r.lastInsertRowid);
@@ -1868,13 +1897,13 @@ router.post('/import/:type', upload.single('file'), (req, res) => {
       if (req.params.type === 'creators') {
         const mainPlat = (record.main_platform || '').trim();
         const distPlat = (record.dist_platform || '').trim();
-        if (mainPlat) {
+        if (!existingCreatorId && mainPlat) {
           const ins = db.prepare(`INSERT INTO creator_accounts (creator_id,platform,account_name,home_url,role,is_primary,created_at) VALUES (?,?,?,?,?,?,datetime('now','localtime'))`)
             .run(r.lastInsertRowid, mainPlat, record.name || '', (record.main_home_url || '').trim() || null, '创作', 1);
           const hu = (record.main_home_url || '').trim();
           if (hu) setImmediate(() => fillAccountFans(hu, ins.lastInsertRowid));
         }
-        if (distPlat) {
+        if (!existingCreatorId && distPlat) {
           // 仅当没有主发平台时，分发账号才置为主账号
           const ins2 = db.prepare(`INSERT INTO creator_accounts (creator_id,platform,account_name,home_url,role,is_primary,created_at) VALUES (?,?,?,?,?,?,datetime('now','localtime'))`)
             .run(r.lastInsertRowid, distPlat, (record.dist_nickname || '').trim() || (record.name || ''), (record.dist_home_url || '').trim() || null, '分发', mainPlat ? 0 : 1);
@@ -1882,7 +1911,17 @@ router.post('/import/:type', upload.single('file'), (req, res) => {
           if (hu2) setImmediate(() => fillAccountFans(hu2, ins2.lastInsertRowid));
         }
         // creators.platform 为冗余旧列（平台信息已下放到 creator_accounts），清空避免默认 'B站' 误导
-        db.prepare(`UPDATE creators SET platform=NULL WHERE id=?`).run(r.lastInsertRowid);
+        if (!existingCreatorId) db.prepare(`UPDATE creators SET platform=NULL WHERE id=?`).run(r.lastInsertRowid);
+        if (record.phase_paid_amount !== undefined && record.phase_paid_amount !== '') {
+          if (!importCampaignId) return fail(res, '模板包含阶段付费金额，请先选择营销阶段后再导入', 400);
+          const paidAmount = Number(record.phase_paid_amount);
+          if (!Number.isFinite(paidAmount) || paidAmount < 0) return fail(res, `${record.name} 的阶段付费金额格式不正确`, 400);
+          db.prepare(`INSERT INTO creator_phase_costs (creator_id,campaign_id,paid_amount,note,updated_at)
+            VALUES (?,?,?,?,datetime('now','localtime'))
+            ON CONFLICT(creator_id,campaign_id) DO UPDATE SET paid_amount=excluded.paid_amount,note=excluded.note,updated_at=datetime('now','localtime')`)
+            .run(r.lastInsertRowid, importCampaignId, paidAmount, '');
+          paymentImported++;
+        }
       }
       // case/exec 导入：按 平台+达人昵称(或主页链接) 解析 creator_id；无 home_url 时按 平台+昵称 匹配
       if ((req.params.type === 'cases' || req.params.type === 'executions')) {
@@ -1902,7 +1941,8 @@ router.post('/import/:type', upload.single('file'), (req, res) => {
       db.prepare("SELECT * FROM hotspots WHERE status='候选' AND screen_result IS NULL").all()
         .forEach(h => { try { rec.screenHotspotById(db, h); } catch (e) {} });
     }
-    ok(res, { inserted, skipped });
+    saveNow();
+    ok(res, { inserted, updated, skipped, paymentImported });
   } catch (e) { fail(res, e.message); }
 });
 

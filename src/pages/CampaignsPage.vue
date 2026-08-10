@@ -92,7 +92,11 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    campaigns.value = await apiGet('/campaigns')
+    const list = await apiGet('/campaigns')
+    campaigns.value = [...list].sort((a, b) => {
+      const dateCompare = String(b.start_date || '').localeCompare(String(a.start_date || ''))
+      return dateCompare || (Number(b.id) || 0) - (Number(a.id) || 0)
+    })
   } catch (e) {
     error.value = e.message
     showToast(e.message, true)

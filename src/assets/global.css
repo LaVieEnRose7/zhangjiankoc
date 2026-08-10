@@ -1124,6 +1124,10 @@ td .row-link:hover { border-bottom-color:var(--ink); }
 .strength-analysis-card,.strength-evidence { margin-top:var(--sp-3);padding:var(--sp-4);border:1px solid var(--border);border-radius:var(--r-md);background:var(--gray-50); }
 .strength-analysis-card p,.strength-evidence p { margin-top:6px;color:var(--ink-dim);line-height:1.65; }
 .strength-evidence p::before { content:'•';margin-right:7px;color:var(--brand); }
+.import-phase-notice { display:grid;grid-template-columns:auto 1fr;gap:4px var(--sp-3);align-items:center;margin-bottom:var(--sp-4);padding:var(--sp-4);border:1px solid rgba(47,143,215,.22);border-radius:var(--r-md);background:rgba(47,143,215,.07); }
+.import-phase-notice span { color:var(--ink-faint);font-size:12px; }
+.import-phase-notice b { color:var(--brand); }
+.import-phase-notice small { grid-column:1 / -1;color:var(--ink-faint); }
 .creator-feed {
   display:grid;
   gap:var(--sp-2);
