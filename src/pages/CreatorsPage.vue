@@ -3,10 +3,9 @@
     <div class="page-head">
       <div class="page-head-left"><h2>创作者库</h2><div class="sub">管理合作创作者 · 追踪表现数据</div></div>
       <div class="page-head-actions">
-        <n-button secondary :loading="loading" @click="load">{{ loading ? '刷新中...' : '刷新' }}</n-button>
-        <n-button secondary :loading="syncingFans" @click="syncAllFans">{{ syncingFans ? `同步中 ${syncProgress.done}/${syncProgress.total || '…'}` : '同步全部粉丝' }}</n-button>
+        <n-button secondary :loading="syncingFans || loading" @click="syncAllFans">{{ syncingFans ? `同步中 ${syncProgress.done}/${syncProgress.total || '…'}` : (loading ? '刷新中...' : '刷新并同步粉丝') }}</n-button>
         <n-button type="primary" @click="openForm()">+ 添加创作者</n-button>
-        <n-button secondary @click="openCreatorImport">导入名单及付费</n-button>
+        <n-button secondary @click="openCreatorImport">导入创作者</n-button>
       </div>
     </div>
 
