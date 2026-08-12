@@ -336,6 +336,41 @@ router.get('/creators/phases', (req, res) => {
   catch (e) { fail(res, e.message); }
 });
 
+router.get('/creators/:id/accounts', (req, res) => {
+  try {
+    ok(res, getDb().prepare('SELECT * FROM creator_accounts WHERE creator_id=? ORDER BY is_primary DESC,id ASC').all(req.params.id));
+  } catch (e) { fail(res, e.message); }
+});
+
+router.put('/creators/:id/accounts', (req, res) => {
+  try {
+    const db = getDb();
+    const creator = db.prepare('SELECT * FROM creators WHERE id=?').get(req.params.id);
+    if (!creator) return fail(res, '创作者不存在', 404);
+    const accounts = Array.isArray(req.body.accounts) ? req.body.accounts.slice(0, 2).filter(account => String(account.platform || '').trim()) : [];
+    if (!accounts.length) return fail(res, '至少需要保留一个主平台账号', 400);
+    db.transaction(() => {
+      const existing = db.prepare('SELECT * FROM creator_accounts WHERE creator_id=? ORDER BY is_primary DESC,id').all(req.params.id);
+      const insert = db.prepare(`INSERT INTO creator_accounts
+        (creator_id,platform,account_name,home_url,fans,role,is_primary,created_at)
+        VALUES (?,?,?,?,?,?,?,datetime('now','localtime'))`);
+      const update = db.prepare('UPDATE creator_accounts SET platform=?,account_name=?,home_url=?,fans=?,role=?,is_primary=? WHERE id=?');
+      const retainedIds = [];
+      accounts.forEach((account, index) => {
+        const platform = String(account.platform || '').trim();
+        const homeUrl = String(account.home_url || '').trim() || null;
+        const matched = existing.find(row => !retainedIds.includes(row.id) && ((homeUrl && row.home_url === homeUrl) || row.platform === platform || Number(row.is_primary) === (index === 0 ? 1 : 0)));
+        const values = [platform, String(account.account_name || creator.name).trim(), homeUrl, Math.max(0, Number(account.fans) || 0), index === 0 ? '创作' : '分发', index === 0 ? 1 : 0];
+        if (matched) { update.run(...values, matched.id); retainedIds.push(matched.id); }
+        else { const result = insert.run(req.params.id, ...values); retainedIds.push(Number(result.lastInsertRowid)); }
+      });
+      for (const row of existing) if (!retainedIds.includes(row.id)) db.prepare('DELETE FROM creator_accounts WHERE id=?').run(row.id);
+    })();
+    saveNow();
+    ok(res, { updated: true, accounts: db.prepare('SELECT * FROM creator_accounts WHERE creator_id=? ORDER BY is_primary DESC,id').all(req.params.id) });
+  } catch (e) { fail(res, e.message); }
+});
+
 router.get('/creators/:id/phase-cost', (req, res) => {
   try {
     const creatorId = Number(req.params.id);
@@ -391,9 +426,15 @@ router.get('/creators/phase-performance', (req, res) => {
       const totalPlay = rows.reduce((sum, x) => sum + (Number(x.play_count) || 0), 0);
       const costRow = phase.id === 'custom' ? null : db.prepare('SELECT paid_amount FROM creator_phase_costs WHERE creator_id=? AND campaign_id=?').get(creator_id, phase.id);
       const paidAmount = costRow ? Number(costRow.paid_amount) : null;
+      const creatorAccounts = db.prepare('SELECT platform,is_primary FROM creator_accounts WHERE creator_id=?').all(creator_id);
+      const primaryPlatform = creatorAccounts.find(account => account.is_primary)?.platform || null;
+      const primaryRows = primaryPlatform ? rows.filter(item => item.platform === primaryPlatform) : rows;
+      const distRows = primaryPlatform ? rows.filter(item => item.platform !== primaryPlatform) : [];
       return {
         creator_id,
         content_count: rows.length,
+        primary_content_count: primaryRows.length,
+        dist_content_count: distRows.length,
         total_play: totalPlay,
         avg_play: avg(rows, 'play_count'),
         paid_amount: paidAmount,
@@ -579,7 +620,14 @@ router.get('/creators/:id/published', (req, res) => {
       benchmark_count: fromCases.filter(v => Number(v.benchmark_met) === 1).length,
       latest_publish_date: latest
     };
-    ok(res, { total: items.length, summary, items, fromCases, fromManual, executions, phase });
+    const primaryAccount = accounts.find(account => Number(account.is_primary) === 1) || accounts[0] || null;
+    const platformsSummary = [...new Set(items.map(item => item.platform).filter(Boolean))].map(platform => {
+      const platformItems = items.filter(item => item.platform === platform);
+      const platformPlay = platformItems.reduce((sum, item) => sum + (Number(item.play_count) || 0), 0);
+      return { platform, role: primaryAccount && platform === primaryAccount.platform ? '主平台' : '分发平台', content_count: platformItems.length,
+        total_play: platformPlay, avg_play: platformItems.length ? Math.round(platformPlay / platformItems.length * 100) / 100 : 0 };
+    });
+    ok(res, { total: items.length, summary, items, fromCases, fromManual, executions, phase, accounts, platformsSummary });
   } catch (e) { fail(res, e.message); }
 });
 
@@ -966,7 +1014,9 @@ async function runSyncFansJob() {
           src = 'live'; syncFansJob.liveOk++;
         }
       }
-      if (!src) {
+      // 案例库粉丝数只用于空值回填。已有的实时/手动粉丝数优先，避免导入表中的
+      // “106W”等非标准值被错误解析后，反向覆盖创作者库的可靠数据。
+      if (!src && !(Number(a.fans) > 0)) {
         const caseFans = matchFansFromCases(db, a);
         if (caseFans) { fans = caseFans; src = 'cases'; syncFansJob.caseOk++; }
       }

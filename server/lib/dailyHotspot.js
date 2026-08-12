@@ -34,6 +34,7 @@ const INTERESTS = [
 const SOFT_EXCLUDE = ['新闻', '时政', '政治', '政策', '主席', '总理', '书记', '地震', '台风', '洪水', '暴雨', '暴雪', '疫情', '病毒', '确诊', '无症状', '股票', '股市', '证券', '基金', '期货', '房产', '楼市', '中考', '高考', '考研', '军事', '战争', '导弹', '制裁', '冲突', '演习', '事故', '遇难', '去世', '讣告', '辟谣', '通报', '处罚', '逮捕', '起诉', '判决', '勒索', '诈骗'];
 // 强无关词：即使有兴趣命中也排除（硬新闻/时政/社会事件）
 const HARD_EXCLUDE = ['时政', '政治', '主席', '总理', '书记', '地震', '台风', '洪水', '疫情', '确诊', '股票', '股市', '证券', '军事', '战争', '导弹', '制裁', '冲突', '演习', '事故', '遇难', '去世', '讣告', '逮捕', '起诉', '判决', '勒索', '诈骗'];
+const GENERIC_CASE_WORDS = new Set(['游戏', '手游', '端游', '直播', '剧情', '角色', '活动', '挑战', '搞笑', '整活', '测评', '攻略', '视频']);
 
 function relevanceScore(title) {
   if (!title) return 0;
@@ -49,14 +50,40 @@ function relevanceScore(title) {
 }
 
 // 过滤掉无关热点，按相关度从高到低排序（游戏/二次元类排前）
-function filterRelevant(list) {
+function filterRelevant(list, db = null) {
   const scored = [];
+  const caseTexts = db ? db.prepare(`SELECT title,copy,summary,content_type,play_method,topic_tags,play_count,result
+      FROM cases WHERE play_count>0 AND source='项目执行结果'`).all()
+    .map(row => ({
+      text: `${row.title || ''} ${row.copy || ''} ${row.summary || ''} ${row.content_type || ''} ${row.play_method || ''} ${row.topic_tags || ''}`.toLowerCase(),
+      weight: ['爆款', '良好', '高表现'].includes(row.result) ? 2 : 1,
+      play: Number(row.play_count) || 0
+    })) : [];
   for (const h of (list || [])) {
-    const s = relevanceScore(h.title);
-    if (s > 0) scored.push({ h, s });
+    // 垂类游戏榜内容天然具备游戏相关性；综合榜仍需关键词验证。
+    const s = h.gameVertical ? Math.max(6, relevanceScore(h.title)) : relevanceScore(h.title);
+    if (s > 0) {
+      const title = String(h.title || '').toLowerCase();
+      const words = INTERESTS.filter(item => item.w >= 2 && title.includes(item.k) && !GENERIC_CASE_WORDS.has(item.k)).map(item => item.k);
+      const matches = caseTexts.filter(item => words.some(word => item.text.includes(word)));
+      const caseHits = matches.length;
+      const successfulCaseCount = matches.filter(item => item.weight > 1).length;
+      const caseScore = matches.reduce((sum, item) => sum + item.weight + Math.min(2, Math.log10(Math.max(1, item.play)) / 3), 0);
+      const heatScore = Math.max(0, 8 - Math.log2(Math.max(1, Number(h.rank) || 100)));
+      const totalScore = s * 4 + Math.min(24, caseScore * 2) + heatScore;
+      scored.push({ h: { ...h, relevanceScore: s, similarCaseCount: caseHits, successfulCaseCount, candidateScore: Math.round(totalScore * 10) / 10 }, s: totalScore });
+    }
   }
   scored.sort((a, b) => b.s - a.s);
-  return scored.map(x => x.h);
+  // 主池按综合分优先；另为每个平台保留少量榜单探索项，提升覆盖且避免单平台霸榜。
+  const primary = scored.slice(0, 80);
+  const picked = new Set(primary.map(item => item.h.id || `${item.h.source}-${item.h.title}`));
+  for (const source of ['抖音', 'B站']) {
+    const explorers = scored.filter(item => item.h.source === source && !picked.has(item.h.id || `${item.h.source}-${item.h.title}`))
+      .sort((a, b) => (Number(a.h.rank) || 999) - (Number(b.h.rank) || 999)).slice(0, 10);
+    for (const item of explorers) { primary.push(item); picked.add(item.h.id || `${item.h.source}-${item.h.title}`); }
+  }
+  return primary.sort((a, b) => b.s - a.s).map(x => x.h);
 }
 
 function dateOnly(d) { return d.toISOString().slice(0, 10); }
@@ -68,9 +95,9 @@ function buildGameContext(camp) {
 
 async function generate(db, { force } = {}) {
   if (force) hotspotSource.invalidate(); // 强制时先清空热点源内存缓存，确保真正重抓
-  const hs = await hotspotSource.getHotspots(50);
-  // 先多抓（每源30），再过滤掉与杖剑传说用户无关的热点，按相关度排序后存快照
-  const list = filterRelevant(hs.list || []);
+  const hs = await hotspotSource.getHotspots(150);
+  // 每源最多抓 150 条，再按游戏相关度、历史落地案例与热度综合排序。
+  const list = filterRelevant(hs.list || [], db);
   const camp = db.prepare("SELECT * FROM campaigns WHERE status='执行中' ORDER BY (is_current=1) DESC, id DESC LIMIT 1").get();
   const recos = await ai.recommendOpportunities({ hotspots: list, gameContext: buildGameContext(camp), topN: 20 });
   const now = new Date().toISOString();

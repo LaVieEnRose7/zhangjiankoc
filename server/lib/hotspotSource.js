@@ -30,6 +30,22 @@ function normalizeBili(j) {
   }));
 }
 
+function normalizeBiliGame(j) {
+  const list = (j && j.data && j.data.list) || [];
+  return list.map((x, i) => ({
+    id: 'bili-game-' + x.bvid,
+    source: 'B站',
+    sourceType: '游戏分区榜',
+    title: x.title,
+    url: 'https://www.bilibili.com/video/' + x.bvid,
+    heat: x.stat && x.stat.view != null ? x.stat.view : null,
+    up: x.owner && x.owner.name,
+    pic: withHttps(x.pic),
+    rank: i + 1,
+    gameVertical: true
+  }));
+}
+
 function normalizeDouyin(j) {
   const wl = (j && j.data && j.data.word_list) || [];
   return wl.map((x, i) => ({
@@ -54,10 +70,26 @@ async function fetchJson(url, opts = {}) {
 }
 
 async function fetchBilibili(limit) {
-  const j = await fetchJson('https://api.bilibili.com/x/web-interface/popular?ps=' + (limit || 20) + '&pn=1', {
-    headers: { Referer: 'https://www.bilibili.com' }
+  // B站单页上限有限，分页抓取后去重，扩大候选池而不是只看榜单前几十名。
+  const wanted = Math.max(20, Number(limit) || 20);
+  const pageSize = Math.min(50, wanted);
+  const pages = Math.min(4, Math.ceil(wanted / pageSize));
+  const results = [];
+  for (let pn = 1; pn <= pages; pn++) {
+    const j = await fetchJson(`https://api.bilibili.com/x/web-interface/popular?ps=${pageSize}&pn=${pn}`, {
+      headers: { Referer: 'https://www.bilibili.com' }
+    });
+    results.push(...normalizeBili(j).map((item, index) => ({ ...item, rank: (pn - 1) * pageSize + index + 1 })));
+  }
+  return [...new Map(results.map(item => [item.id, item])).values()].slice(0, wanted);
+}
+
+async function fetchBilibiliGame(limit) {
+  // rid=4 为 B站游戏分区榜，直接使用垂类榜而非综合热门二次筛选。
+  const j = await fetchJson('https://api.bilibili.com/x/web-interface/ranking/v2?rid=4&type=all', {
+    headers: { Referer: 'https://www.bilibili.com/v/game/' }
   });
-  return normalizeBili(j);
+  return normalizeBiliGame(j).slice(0, Math.max(20, Number(limit) || 20));
 }
 
 async function fetchDouyin(limit) {
@@ -106,11 +138,14 @@ async function getHotspots(limit) {
   if (cache.data && now - cache.ts < CACHE_TTL) {
     return pack(cache.data, lim);
   }
-  const [biliRes, dyRes] = await Promise.allSettled([fetchBilibili(lim), fetchDouyin(lim)]);
-  const biliList = biliRes.status === 'fulfilled' ? biliRes.value : [];
+  const [biliGameRes, biliGeneralRes, dyRes] = await Promise.allSettled([fetchBilibiliGame(lim), fetchBilibili(Math.min(50, lim)), fetchDouyin(lim)]);
+  const biliGameList = biliGameRes.status === 'fulfilled' ? biliGameRes.value : [];
+  const biliGeneralList = biliGeneralRes.status === 'fulfilled' ? biliGeneralRes.value : [];
+  const biliList = [...new Map([...biliGameList, ...biliGeneralList].map(item => [item.url, item])).values()];
   const dyList = dyRes.status === 'fulfilled' ? dyRes.value : [];
   const data = {
-    bili: biliList,
+      bili: biliList,
+      biliGameCount: biliGameList.length,
     douyin: dyList,
     fetchedAt: new Date().toISOString()
   };
@@ -132,6 +167,7 @@ function pack(data, lim) {
   return {
     list,
     biliCount: bili.length,
+    biliGameCount: data.biliGameCount || bili.filter(item => item.gameVertical).length,
     douyinCount: douyin.length,
     fetchedAt: data.fetchedAt,
     sourceStatus: {
@@ -144,4 +180,4 @@ function pack(data, lim) {
 /** 强制刷新缓存（供前端「实时刷新」按钮调用） */
 function invalidate() { cache = { ts: 0, data: null }; }
 
-module.exports = { getHotspots, invalidate, fetchBilibili, fetchDouyin };
+module.exports = { getHotspots, invalidate, fetchBilibili, fetchBilibiliGame, fetchDouyin };

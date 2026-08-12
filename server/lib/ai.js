@@ -637,26 +637,26 @@ function ruleRecommend(hotspots, topN) {
     const t = String(h.title || '');
     let hit = 0;
     for (const k of GAME_KW) if (t.includes(k)) hit++;
-    return { h, hit };
+    return { h, hit, caseCount: Number(h.similarCaseCount) || 0, successCount: Number(h.successfulCaseCount) || 0, relevance: Number(h.relevanceScore) || 0, candidateScore: Number(h.candidateScore) || 0 };
   }).filter(x => x.hit > 0)
-    .sort((a, b) => (b.hit - a.hit) || ((b.h.heat || 0) - (a.h.heat || 0)));
+    .sort((a, b) => (b.successCount - a.successCount) || (b.candidateScore - a.candidateScore) || (b.caseCount - a.caseCount) || (b.hit - a.hit) || ((b.h.heat || 0) - (a.h.heat || 0)));
   return scored.slice(0, topN).map(x => ({
     title: x.h.title,
     score: Math.min(95, 55 + x.hit * 10),
     verdict: x.hit >= 2 ? '推荐' : '可尝试',
     angle: '结合游戏相关题材做 KOC 内容',
-    reason: '含「' + GAME_KW.filter(k => String(x.h.title).includes(k)).join('、') + '」等游戏相关关键词，可尝试结合《杖剑传说》做内容'
+    reason: (x.caseCount ? `已有 ${x.caseCount} 条同类落地案例，其中 ${x.successCount} 条高表现；` : '') + '含「' + GAME_KW.filter(k => String(x.h.title).includes(k)).join('、') + '」等游戏相关关键词，可尝试结合《杖剑传说》做内容'
   }));
 }
 
 async function recommendOpportunities({ hotspots, gameContext, topN = 8 }) {
   if (!hotspots || !hotspots.length) return [];
-  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}] ${h.title}（热度:${h.heat != null ? h.heat : '—'}）`).join('\n');
+  const numbered = hotspots.map((h, i) => `${i + 1}. [${h.source}] ${h.title}（热度:${h.heat != null ? h.heat : '—'}；游戏相关度:${h.relevanceScore || 0}；综合候选分:${h.candidateScore || 0}；同类落地案例:${h.similarCaseCount || 0}条，其中高表现:${h.successfulCaseCount || 0}条）`).join('\n');
   const apiKey = getAiApiKey();
   const prompt = `你是《杖剑传说》手游的 KOC 内容营销分析师。下面是当前实时抓取的抖音热榜与B站热门的真实热点。
 游戏背景：${gameContext || '《杖剑传说》是一款剑与魔法的奇幻题材手游，适合测评/攻略/剧情/二创/整活类 KOC 内容。'}
 
-任务：从这些热点中挑出最值得结合《杖剑传说》做 KOC 内容营销的 Top ${topN}（不足则全挑）。判断标准：话题与游戏题材/玩法/情绪/版本节点/二创有自然结合点，容易产出有传播力的内容。
+任务：从这些热点中挑出最值得结合《杖剑传说》做 KOC 内容营销的 Top ${topN}（不足则全挑）。优先级依次为：游戏强相关、已有同类游戏落地案例、与当前任务契合、热度及时效性；同时保留少量有自然游戏结合点的泛娱乐内容以扩大候选覆盖。
 只输出 JSON，不要其他内容：
 {"picks":[{"title":<热点原标题，必须一字不差>,"score":<1-100 匹配度整数>,"verdict":"强烈推荐"|"推荐"|"可尝试","angle":"结合角度一句话","reason":"推荐理由1-2句"}]}
 

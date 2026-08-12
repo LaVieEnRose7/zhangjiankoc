@@ -56,7 +56,13 @@
     </Modal>
 
     <div class="filter-bar">
-      <n-select v-model:value="filters.platform" :options="platformFilterOptions" placeholder="平台-全部" clearable />
+      <div class="platform-quick-filter" aria-label="按主平台筛选创作者">
+        <span>主平台</span>
+        <n-button v-for="option in primaryPlatformQuickOptions" :key="option.value || 'all'" size="small"
+          :type="filters.platform === option.value ? 'primary' : 'default'" secondary
+          @click="filters.platform = option.value">{{ option.label }}</n-button>
+      </div>
+      <n-select v-model:value="filters.platform" :options="platformFilterOptions" placeholder="更多平台" clearable />
       <n-input class="q" v-model:value="filters.q" placeholder="搜索名称/标签" clearable />
       <n-button size="small" secondary @click="resetCreatorFilters">重置</n-button>
       <n-button v-if="checkedCreatorIds.length" size="small" type="error" secondary @click="batchDelete">
@@ -95,21 +101,31 @@
       <div class="form-grid">
         <div class="form-row full"><label>名称 *</label><n-input v-model:value="form.name" /></div>
         <div class="form-row">
-          <label for="creator-platform">平台</label>
+          <label for="creator-platform">主平台</label>
           <select id="creator-platform" v-model="form.platform" class="creator-platform-select">
             <option v-for="option in platformOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
         </div>
-        <div class="form-row"><label>粉丝量（主页实时获取）</label><n-input-number v-model:value="form.fans" :min="0" :show-button="false" readonly style="width:100%" placeholder="填写主页链接后自动获取" /></div>
+        <div class="form-row"><label>主平台粉丝量（可手动填写）</label><n-input-number v-model:value="form.fans" :min="0" :show-button="false" style="width:100%" placeholder="抓取失败时可手动填写" /></div>
         <div class="form-row"><label>均播放量（案例自动统计）</label><n-input-number v-model:value="form.avg_play" :min="0" :show-button="false" readonly style="width:100%" placeholder="导入案例后自动计算" /></div>
         <div class="form-row full"><label>擅长方向/标签</label><n-input v-model:value="form.categories" placeholder="逗号分隔" /></div>
         <div class="form-row full">
-          <label>主页链接</label>
+          <label>主平台主页链接</label>
           <div style="display:flex;gap:8px">
-            <n-input v-model:value="form.home_url" placeholder="支持 B站、抖音创作者主页" @blur="fetchProfile" @keyup.enter="fetchProfile" />
+            <n-input v-model:value="form.home_url" placeholder="支持 B站、抖音创作者主页" @keyup.enter="fetchProfile" />
             <n-button secondary :loading="fetchingProfile" :disabled="!form.home_url" @click="fetchProfile">{{ fetchingProfile ? '获取中...' : '获取粉丝' }}</n-button>
           </div>
-          <div class="hint" style="margin-top:6px">保存前会使用最近一次从主页获取的粉丝数据，无需手动填写。</div>
+          <div class="hint" style="margin-top:6px">实时获取失败时会保留当前手动填写的粉丝数。</div>
+        </div>
+        <div class="form-row"><label>分发平台</label><n-select v-model:value="form.dist_platform" :options="platformOptions" clearable placeholder="可选" /></div>
+        <div class="form-row"><label>分发平台名称</label><n-input v-model:value="form.dist_nickname" placeholder="分发账号昵称" /></div>
+        <div class="form-row"><label>分发平台粉丝量（可手动填写）</label><n-input-number v-model:value="form.dist_fans" :min="0" :show-button="false" style="width:100%" /></div>
+        <div class="form-row full">
+          <label>分发主页链接</label>
+          <div style="display:flex;gap:8px">
+            <n-input v-model:value="form.dist_home_url" placeholder="分发平台作者主页链接" @keyup.enter="fetchDistributionProfile" />
+            <n-button secondary :loading="fetchingDistProfile" :disabled="!form.dist_home_url" @click="fetchDistributionProfile">{{ fetchingDistProfile ? '获取中...' : '获取粉丝' }}</n-button>
+          </div>
         </div>
       </div>
       <template #foot><n-button type="primary" :loading="saving" @click="save">{{ saving ? '保存中...' : '保存' }}</n-button></template>
@@ -175,8 +191,16 @@
                 <div><b>{{ fmt(pubSummary.benchmark_count) }}</b><span>达标内容</span></div>
                 <div><b>{{ fmtDate(pubSummary.latest_publish_date) }}</b><span>最近发布</span></div>
               </div>
-              <div class="creator-feed" v-if="publishedItems.length">
-                <div class="creator-feed-item" v-for="item in publishedItems.slice(0, 6)" :key="`${item.source}-${item.caseId || item.id}`">
+              <div class="creator-platform-summary" v-if="publishedData?.platformsSummary?.length">
+                <div v-for="platform in publishedData.platformsSummary" :key="platform.platform">
+                  <StatusTag :text="platform.platform" /><small>{{ platform.role }}</small><b>{{ platform.content_count }} 条</b><span>总播 {{ fmt(platform.total_play) }} · 均播 {{ fmt(platform.avg_play) }}</span>
+                </div>
+              </div>
+              <div class="creator-content-filter" v-if="publishedPlatformOptions.length > 1">
+                <n-button v-for="option in publishedPlatformOptions" :key="option.value" size="small" :type="publishedPlatform === option.value ? 'primary' : 'default'" secondary @click="selectPublishedPlatform(option.value)">{{ option.label }}</n-button>
+              </div>
+              <div class="creator-feed" v-if="filteredPublishedItems.length">
+                <div class="creator-feed-item" v-for="item in pagedPublishedItems" :key="`${item.source}-${item.caseId || item.id}`">
                   <div>
                     <div class="feed-title">{{ item.title || '未命名内容' }}</div>
                     <div class="feed-meta">{{ item.platform || '平台待定' }} · {{ fmtDate(item.publish_date) }} · {{ item.source }}</div>
@@ -190,7 +214,11 @@
                   </div>
                 </div>
               </div>
-              <EmptyState v-else icon="inbox">还没有关联到发布内容</EmptyState>
+              <div v-if="filteredPublishedItems.length > publishedPageSize" class="list-pagination compact-pagination">
+                <span>共 {{ filteredPublishedItems.length }} 条 · 每页 {{ publishedPageSize }} 条</span>
+                <div><n-button size="small" secondary :disabled="publishedPage <= 1" @click="publishedPage--">上一页</n-button><span>{{ publishedPage }}/{{ publishedTotalPages }}</span><n-button size="small" secondary :disabled="publishedPage >= publishedTotalPages" @click="publishedPage++">下一页</n-button></div>
+              </div>
+              <EmptyState v-if="!filteredPublishedItems.length" icon="inbox">还没有关联到发布内容</EmptyState>
               <div class="creator-exec-strip" v-if="publishedData?.executions?.length">
                 <b>执行记录</b>
                 <span v-for="e in publishedData.executions.slice(0, 4)" :key="e.id">
@@ -206,7 +234,15 @@
             </div>
             <p><b>擅长方向：</b>{{ selectedCreator?.categories || selectedCreator?.strengths || '—' }}</p>
             <p><b>内容类型：</b>{{ selectedCreator?.content_type || '—' }}</p>
-            <p><b>主页：</b><n-button v-if="selectedCreator?.home_url" size="small" secondary @click="openLink(selectedCreator.home_url)">打开主页</n-button><span v-else>—</span></p>
+            <div class="creator-account-list" v-if="publishedData?.accounts?.length">
+              <div v-for="account in publishedData.accounts" :key="account.id || `${account.platform}-${account.home_url}`">
+                <StatusTag :text="account.platform || '其他'" />
+                <span>{{ account.role }} · {{ account.account_name || selectedCreator?.name }}</span>
+                <b>{{ fmt(account.fans) }} 粉丝</b>
+                <n-button v-if="account.home_url" size="small" secondary @click="openLink(account.home_url)">打开主页</n-button>
+              </div>
+            </div>
+            <p v-else><b>主页：</b><n-button v-if="selectedCreator?.home_url" size="small" secondary @click="openLink(selectedCreator.home_url)">打开主页</n-button><span v-else>—</span></p>
           </div>
           <div class="detail-section">
             <h3>备注</h3>
@@ -269,20 +305,26 @@ const filters = ref({ platform: '', q: '' }), creators = ref([]), showForm = ref
 const phases = ref([]), selectedPhaseId = ref(null), phasePerformance = ref(new Map())
 const timeMode = ref('phase'), customDateFrom = ref(''), customDateTo = ref('')
 const showPhaseForm = ref(false), savingPhase = ref(false), phaseForm = ref({ name: '', start_date: '' })
-const loading = ref(false), error = ref(''), saving = ref(false), importing = ref(false), busyId = ref(null), fetchingProfile = ref(false), syncingFans = ref(false)
+const loading = ref(false), error = ref(''), saving = ref(false), importing = ref(false), busyId = ref(null), fetchingProfile = ref(false), fetchingDistProfile = ref(false), syncingFans = ref(false)
 const syncProgress = ref({ done: 0, total: 0 })
 const detailVisible = ref(false), selectedCreator = ref(null)
 const checkedCreatorIds = ref([])
 const creatorPage = ref(1), pageSize = 15
 const creatorSort = ref({ key: 'total_play', order: 'desc' })
 const publishedData = ref(null), publishedLoading = ref(false), publishedError = ref(''), rematching = ref(false)
+const publishedPlatform = ref(''), publishedPage = ref(1), publishedPageSize = 15
 const showPhaseCost = ref(false), savingPhaseCost = ref(false), phaseCostCreator = ref(null), phaseCostForm = ref({ paid_amount: null })
 const showStrengthAnalysis = ref(false), analyzingStrengths = ref(false), savingStrengths = ref(false)
 const strengthAnalysis = ref({}), strengthCategoriesDraft = ref('')
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
 const platformFilterOptions = platformOptions.filter(o => o.value !== '其他')
+const primaryPlatformQuickOptions = [
+  { label: '全部', value: '' },
+  { label: '抖音', value: '抖音' },
+  { label: 'B站', value: 'B站' }
+]
 const selectedPhase = computed(() => phases.value.find(p => Number(p.id) === Number(selectedPhaseId.value)) || null)
-const phaseMetric = row => phasePerformance.value.get(Number(row?.id)) || { content_count: 0, total_play: 0, avg_play: 0, paid_amount: null, cpm: null, avg_activation: null, avg_roi7: null, high_count: 0 }
+const phaseMetric = row => phasePerformance.value.get(Number(row?.id)) || { content_count: 0, primary_content_count: 0, dist_content_count: 0, total_play: 0, avg_play: 0, paid_amount: null, cpm: null, avg_activation: null, avg_roi7: null, high_count: 0 }
 
 const filtered = computed(() => {
   let l = creators.value
@@ -316,6 +358,11 @@ function resetCreatorFilters() {
 }
 const pubSummary = computed(() => publishedData.value?.summary || {})
 const publishedItems = computed(() => publishedData.value?.items || [])
+const publishedPlatformOptions = computed(() => [{ label: '全部平台', value: '' }, ...[...new Set(publishedItems.value.map(item => item.platform).filter(Boolean))].map(platform => ({ label: platform, value: platform }))])
+const filteredPublishedItems = computed(() => publishedPlatform.value ? publishedItems.value.filter(item => item.platform === publishedPlatform.value) : publishedItems.value)
+const publishedTotalPages = computed(() => Math.max(1, Math.ceil(filteredPublishedItems.value.length / publishedPageSize)))
+const pagedPublishedItems = computed(() => filteredPublishedItems.value.slice((publishedPage.value - 1) * publishedPageSize, publishedPage.value * publishedPageSize))
+function selectPublishedPlatform(platform) { publishedPlatform.value = platform; publishedPage.value = 1 }
 const creatorSortValue = (row, key) => {
   if (key === 'fans') return Number(row.fans) || 0
   const metric = phaseMetric(row)
@@ -344,7 +391,8 @@ const creatorColumns = computed(() => [
   },
   { title: '平台', key: 'platform', width: 92, render: row => row.platform || '—' },
   { title: '粉丝', key: 'fans', width: 120, ...creatorSortProps('fans'), render: row => fmt(row.fans) },
-  { title: '发布数', key: 'content_count', width: 90, ...creatorSortProps('content_count'), render: row => phaseMetric(row).content_count },
+  { title: '主平台发布', key: 'content_count', width: 105, ...creatorSortProps('content_count'), render: row => phaseMetric(row).primary_content_count || 0 },
+  { title: '分发平台发布', key: 'dist_content_count', width: 115, render: row => phaseMetric(row).dist_content_count || 0 },
   { title: '总播放', key: 'total_play', width: 115, ...creatorSortProps('total_play'), render: row => fmt(phaseMetric(row).total_play) },
   { title: '均播放', key: 'avg_play', width: 115, ...creatorSortProps('avg_play'), render: row => fmt(selectedPhaseId.value ? phaseMetric(row).avg_play : row.avg_play) },
   { title: '高表现', key: 'phase_high', width: 76, render: row => phaseMetric(row).high_count },
@@ -454,11 +502,18 @@ async function syncAllFans() {
   } catch (e) { showToast(e.message, true) }
   finally { syncingFans.value = false; syncProgress.value = { done: 0, total: 0 } }
 }
-function openForm(c = null) {
+async function openForm(c = null) {
   editing.value = c
-  form.value = c
-    ? { ...c, platform: c.primary_platform || c.platform || 'B站' }
-    : { name: '', platform: 'B站', fans: 0, avg_play: 0, categories: '', home_url: '' }
+  if (c) {
+    let accounts = []
+    try { accounts = await apiGet(`/creators/${c.id}/accounts`) } catch (e) { /* 兼容旧数据 */ }
+    const primary = accounts.find(account => Number(account.is_primary) === 1) || accounts[0] || {}
+    const dist = accounts.find(account => Number(account.id) !== Number(primary.id)) || {}
+    form.value = { ...c, platform: primary.platform || c.primary_platform || c.platform || 'B站', home_url: primary.home_url || c.home_url || '', fans: primary.fans ?? c.fans ?? 0,
+      dist_platform: dist.platform || null, dist_nickname: dist.account_name || '', dist_home_url: dist.home_url || '', dist_fans: dist.fans || 0 }
+  } else {
+    form.value = { name: '', platform: 'B站', fans: 0, avg_play: 0, categories: '', home_url: '', dist_platform: null, dist_nickname: '', dist_home_url: '', dist_fans: 0 }
+  }
   showForm.value = true
 }
 async function fetchProfile() {
@@ -474,9 +529,24 @@ async function fetchProfile() {
   } catch (e) { showToast(`获取失败：${e.message}`, true) }
   finally { fetchingProfile.value = false }
 }
+async function fetchDistributionProfile() {
+  const url = String(form.value.dist_home_url || '').trim()
+  if (!url || fetchingDistProfile.value) return
+  fetchingDistProfile.value = true
+  try {
+    const profile = await apiPost('/creators/fetch-profile', { url })
+    form.value.dist_fans = profile.fans
+    if (profile.platform) form.value.dist_platform = profile.platform
+    if (!form.value.dist_nickname && profile.name) form.value.dist_nickname = profile.name
+    showToast(`已获取分发主页数据：${fmt(profile.fans)} 粉丝`)
+  } catch (e) { showToast(`获取失败：${e.message}`, true) }
+  finally { fetchingDistProfile.value = false }
+}
 function openDetail(c) {
   selectedCreator.value = c
   detailVisible.value = true
+  publishedPlatform.value = ''
+  publishedPage.value = 1
   loadPublished(c.id)
 }
 function closeDetail() {
@@ -589,9 +659,12 @@ async function save() {
   if (!form.value.name.trim()) return showToast('请输入名称', true)
   saving.value = true
   try {
-    if (form.value.home_url) await fetchProfile()
-    if (editing.value) await apiPut(`/creators/${editing.value.id}`, form.value)
-    else await apiPost('/creators', { ...form.value, created_by: getUser() })
+    let creatorId
+    if (editing.value) { await apiPut(`/creators/${editing.value.id}`, form.value); creatorId = editing.value.id }
+    else { const created = await apiPost('/creators', { ...form.value, created_by: getUser() }); creatorId = created.id }
+    const accounts = [{ platform: form.value.platform, account_name: form.value.name, home_url: form.value.home_url, fans: form.value.fans }]
+    if (form.value.dist_platform) accounts.push({ platform: form.value.dist_platform, account_name: form.value.dist_nickname || form.value.name, home_url: form.value.dist_home_url, fans: form.value.dist_fans })
+    await apiPut(`/creators/${creatorId}/accounts`, { accounts })
     showForm.value = false
     showToast('已保存')
     await load()

@@ -765,6 +765,9 @@ td .row-link:hover { border-bottom-color:var(--ink); }
   --n-color-focus: #fff !important;
   --n-color-disabled: #fff !important;
 }
+.platform-quick-filter { display:flex;align-items:center;gap:var(--sp-2);padding-right:var(--sp-2);border-right:1px solid var(--border); }
+.platform-quick-filter > span { color:var(--ink-faint);font-size:13px;white-space:nowrap; }
+@media (max-width: 760px) { .platform-quick-filter { width:100%;padding-right:0;padding-bottom:var(--sp-2);border-right:0;border-bottom:1px solid var(--border); } }
 
 /* -------- Shared time range query -------- */
 .time-range-filter {
@@ -1600,6 +1603,13 @@ td .row-link:hover { border-bottom-color:var(--ink); }
 .creator-segment-metrics b { font-size:13px; }
 .creator-segment-metrics small { color:var(--ink-faint);font-size:10px; }
 .creator-segment-empty { padding:var(--sp-8);text-align:center;color:var(--ink-faint);font-size:13px; }
+.creator-platform-summary { display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:var(--sp-3);margin:var(--sp-4) 0; }
+.creator-platform-summary > div { display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:center;padding:var(--sp-3);border:1px solid var(--border);border-radius:var(--r-md);background:var(--gray-50); }
+.creator-platform-summary small { color:var(--ink-faint);text-align:right; }.creator-platform-summary b,.creator-platform-summary span { grid-column:1 / -1; }.creator-platform-summary b { font-size:18px; }.creator-platform-summary span { color:var(--ink-faint);font-size:12px; }
+.creator-content-filter { display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-3); }.compact-pagination { margin-top:var(--sp-3);margin-bottom:0; }
+.creator-account-list { display:grid;gap:var(--sp-2);margin-top:var(--sp-3); }
+.creator-account-list > div { display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-2);padding:9px 10px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--gray-50); }
+.creator-account-list > div > span { flex:1;min-width:140px; }.creator-account-list > div > b { white-space:nowrap; }
 @media (max-width:1100px) {
   .ops-overview-grid { grid-template-columns:repeat(2, minmax(0,1fr)); }
   .ops-dashboard-lower { grid-template-columns:1fr; }

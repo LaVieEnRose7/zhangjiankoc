@@ -32,7 +32,13 @@
     </n-tabs>
 
     <div class="filter-bar">
-      <n-select v-model:value="filters.platform" :options="platformFilterOptions" placeholder="平台-全部" clearable />
+      <div class="platform-quick-filter" aria-label="按发布平台筛选案例">
+        <span>发布平台</span>
+        <n-button v-for="option in platformQuickOptions" :key="option.value || 'all'" size="small"
+          :type="filters.platform === option.value ? 'primary' : 'default'" secondary
+          @click="filters.platform = option.value">{{ option.label }}</n-button>
+      </div>
+      <n-select v-model:value="filters.platform" :options="platformFilterOptions" placeholder="更多平台" clearable />
       <n-select v-model:value="filters.result" :options="resultFilterOptions" placeholder="效果-全部" clearable />
       <n-input class="q" v-model:value="filters.q" placeholder="搜索标题/创作者" clearable />
       <n-button size="small" secondary @click="resetFilters">重置</n-button>
@@ -222,6 +228,11 @@ const caseSort = ref({ key: 'publish_date', order: 'desc' })
 const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1280)
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
 const platformFilterOptions = platformOptions.filter(o => o.value !== '其他')
+const platformQuickOptions = [
+  { label: '全部', value: '' },
+  { label: '抖音', value: '抖音' },
+  { label: 'B站', value: 'B站' }
+]
 const resultFilterOptions = ['爆款', '良好'].map(v => ({ label: v, value: v }))
 const importModeOptions = [
   { label: '通用案例/发布数据', value: 'cases' },
