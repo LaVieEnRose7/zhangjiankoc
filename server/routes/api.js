@@ -35,11 +35,16 @@ async function fillAccountFans(home_url, accId) {
 // 从已导入的案例库发布数据反匹配粉丝量（平台+达人昵称 或 已关联的 creator_id），作为联网抓取失败时的可靠兜底
 function matchFansFromCases(db, acc) {
   let row = null;
-  if (acc.creator_id) {
-    row = db.prepare('SELECT fans FROM cases WHERE creator_id=? AND fans>0 ORDER BY publish_date DESC LIMIT 1').get(acc.creator_id);
+  const platform = String(acc.platform || '').trim();
+  if (acc.creator_id && platform) {
+    row = db.prepare(`SELECT fans FROM cases
+      WHERE creator_id=? AND platform=? AND fans>0
+      ORDER BY publish_date DESC,id DESC LIMIT 1`).get(acc.creator_id, platform);
   }
-  if (!row) {
-    row = db.prepare('SELECT fans FROM cases WHERE platform=? AND creator_name=? AND fans>0 ORDER BY publish_date DESC LIMIT 1').get(acc.platform, acc.account_name);
+  if (!row && platform && acc.account_name) {
+    row = db.prepare(`SELECT fans FROM cases
+      WHERE platform=? AND creator_name=? AND fans>0
+      ORDER BY publish_date DESC,id DESC LIMIT 1`).get(platform, acc.account_name);
   }
   return row ? (Number(row.fans) || 0) : 0;
 }
@@ -1006,6 +1011,8 @@ async function runSyncFansJob() {
     syncFansJob = { status: 'running', total: rows.length, done: 0, liveOk: 0, caseOk: 0, failCount: 0, startedAt: new Date().toISOString(), finishedAt: null, error: '' };
     for (const a of rows) {
       let fans = a.fans || 0, name = a.account_name || '', src = null;
+      const siblingAccounts = rows.filter(row => Number(row.creator_id) === Number(a.creator_id) && row.id !== a.id);
+      const duplicatedAcrossPlatforms = Number(a.fans) > 0 && siblingAccounts.some(row => row.platform !== a.platform && Number(row.fans) === Number(a.fans));
       if (a.home_url) {
         const result = await fetchProfile(a.home_url);
         if (result.ok && result.fans) {
@@ -1016,9 +1023,11 @@ async function runSyncFansJob() {
       }
       // 案例库粉丝数只用于空值回填。已有的实时/手动粉丝数优先，避免导入表中的
       // “106W”等非标准值被错误解析后，反向覆盖创作者库的可靠数据。
-      if (!src && !(Number(a.fans) > 0)) {
+      if (!src && (!(Number(a.fans) > 0) || duplicatedAcrossPlatforms)) {
         const caseFans = matchFansFromCases(db, a);
-        if (caseFans) { fans = caseFans; src = 'cases'; syncFansJob.caseOk++; }
+        if (caseFans && (!duplicatedAcrossPlatforms || Number(caseFans) !== Number(a.fans))) {
+          fans = caseFans; src = 'cases'; syncFansJob.caseOk++;
+        }
       }
       if (src) db.prepare('UPDATE creator_accounts SET fans=?, account_name=? WHERE id=?').run(fans, name || '', a.id);
       else syncFansJob.failCount++;
