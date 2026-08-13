@@ -22,6 +22,7 @@ function normalizeBili(j) {
     id: 'bili-' + x.bvid,
     source: 'B站',
     title: x.title,
+    category: x.tname || '游戏',
     url: 'https://www.bilibili.com/video/' + x.bvid,
     heat: x.stat && x.stat.view != null ? x.stat.view : null,
     up: x.owner && x.owner.name,

@@ -56,8 +56,8 @@
         <div class="form-row"><label>优先级</label><n-select v-model:value="form.priority" :options="priorityOptions" /></div>
         <div class="form-row"><label>状态</label><n-select v-model:value="form.status" :options="statusOptions" /></div>
         <div class="form-row full"><label>传播目标</label><n-input v-model:value="form.goal" /></div>
-        <div class="form-row"><label>周期开始</label><n-input v-model:value="form.start_date" type="date" /></div>
-        <div class="form-row"><label>周期结束</label><n-input v-model:value="form.end_date" type="date" /></div>
+        <div class="form-row"><label>周期开始</label><input v-model="form.start_date" class="form-date-input" type="date" /></div>
+        <div class="form-row"><label>周期结束</label><input v-model="form.end_date" class="form-date-input" type="date" /></div>
         <div class="form-row"><label>当前版本/活动</label><n-input v-model:value="form.version_event" /></div>
         <div class="form-row"><label>重点角色/内容</label><n-input v-model:value="form.focus_content" /></div>
         <div class="form-row"><label>目标平台</label><n-input v-model:value="form.target_platform" placeholder="如：B站、抖音" /></div>

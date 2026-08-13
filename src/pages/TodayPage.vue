@@ -192,17 +192,17 @@
     <Modal :show="showHotspotForm" @close="showHotspotForm = false" wide>
       <template #head><h3>录入候选热点</h3></template>
       <div class="form-grid">
-        <div class="form-row full"><label>热点标题 *</label><n-input v-model:value="hsTitle" /></div>
-        <div class="form-row"><label>来源</label><n-input v-model:value="hsSource" /></div>
-        <div class="form-row"><label>平台</label><n-select v-model:value="hsPlatform" :options="platformOptions" /></div>
-        <div class="form-row"><label>分类</label><n-select v-model:value="hsCategory" :options="categoryOptions" /></div>
-        <div class="form-row"><label>热度</label><n-input-number v-model:value="hsHeat" :min="0" style="width:100%" /></div>
-        <div class="form-row"><label>趋势</label><n-select v-model:value="hsTrend" :options="trendOptions" /></div>
-        <div class="form-row"><label>有效期</label><n-input v-model:value="hsValid" type="date" /></div>
-        <div class="form-row full"><label>链接</label><n-input v-model:value="hsUrl" /></div>
-        <div class="form-row full"><label>标签</label><n-input v-model:value="hsTags" placeholder="逗号分隔" /></div>
-        <div class="form-row full"><label>描述</label><n-input v-model:value="hsDesc" type="textarea" /></div>
-        <div class="form-row full"><label>风险提示</label><n-input v-model:value="hsRisk" /></div>
+        <div class="form-row full"><label>热点标题 *</label><n-input v-model:value="hsTitle" placeholder="填写真实热点或视频标题" /></div>
+        <div class="form-row"><label>发布平台 *</label><select v-model="hsPlatform" class="form-select-input"><option v-for="option in platformOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
+        <div class="form-row"><label>信息来源 *</label><select v-model="hsSource" class="form-select-input"><option v-for="option in sourceOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
+        <div class="form-row"><label>热点类型 *</label><select v-model="hsCategory" class="form-select-input"><option v-for="option in categoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
+        <div class="form-row"><label>当前趋势</label><select v-model="hsTrend" class="form-select-input"><option v-for="option in trendOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
+        <div class="form-row"><label>热度评分（0–100）</label><n-input-number v-model:value="hsHeat" :min="0" :max="100" :show-button="false" style="width:100%" /></div>
+        <div class="form-row"><label>预计有效期 *</label><input v-model="hsValid" class="form-date-input" type="date" /></div>
+        <div class="form-row full"><label>原内容链接 *</label><n-input v-model:value="hsUrl" placeholder="填写可直接打开的视频或热点链接" /></div>
+        <div class="form-row full"><label>内容描述 *</label><n-input v-model:value="hsDesc" type="textarea" placeholder="说明热点内容、爆点，以及为什么值得关注" /></div>
+        <div class="form-row full"><label>可结合方向</label><n-input v-model:value="hsTags" placeholder="例如：手游、奇幻冒险、职业养成；多个标签用逗号分隔" /></div>
+        <div class="form-row full"><label>风险提示</label><n-input v-model:value="hsRisk" placeholder="没有风险可留空；如版权、争议、时效风险" /></div>
       </div>
       <template #foot><n-button type="primary" :loading="savingHotspot" @click="saveHotspot">{{ savingHotspot ? '保存中...' : '保存热点' }}</n-button></template>
     </Modal>
@@ -211,7 +211,7 @@
       <template #head><h3>添加待办</h3></template>
       <div class="form-row"><label>待办内容 *</label><n-input v-model:value="tdTitle" /></div>
       <div class="form-row"><label>负责人</label><n-input v-model:value="tdAss" /></div>
-      <div class="form-row"><label>截止日期</label><n-input v-model:value="tdDue" type="date" /></div>
+      <div class="form-row"><label>截止日期</label><input v-model="tdDue" class="form-date-input" type="date" /></div>
       <template #foot><n-button type="primary" :loading="savingTodo" @click="saveTodo">{{ savingTodo ? '添加中...' : '添加' }}</n-button></template>
     </Modal>
   </div>
@@ -259,13 +259,14 @@ const canCopyCreative = computed(() => creativeText.value && !creativeText.value
 const showFocus = ref(false), focusVer = ref(''), focusContent = ref('')
 const showHotspotForm = ref(false), showTodoForm = ref(false)
 
-const hsTitle = ref(''), hsSource = ref('B站热门内容'), hsPlatform = ref('B站')
-const hsCategory = ref('游戏内'), hsHeat = ref(60), hsTrend = ref('上升')
+const hsTitle = ref(''), hsSource = ref('平台热榜'), hsPlatform = ref('B站')
+const hsCategory = ref('手游热点'), hsHeat = ref(60), hsTrend = ref('上升')
 const hsValid = ref(''), hsUrl = ref(''), hsTags = ref(''), hsDesc = ref(''), hsRisk = ref('')
 
 const tdTitle = ref(''), tdAss = ref(user.value), tdDue = ref('')
 const platformOptions = ['B站', '抖音', '微博', '小红书', '其他'].map(v => ({ label: v, value: v }))
-const categoryOptions = ['游戏内', '泛游戏', '泛娱乐', '社会热点'].map(v => ({ label: v, value: v }))
+const sourceOptions = ['平台热榜', '游戏分区榜', '创作者视频', '站内搜索', '人工发现', '其他'].map(v => ({ label: v, value: v }))
+const categoryOptions = ['杖剑传说相关', '同类手游案例', '手游热点', '游戏玩法热点', '泛娱乐可借势'].map(v => ({ label: v, value: v }))
 const trendOptions = ['上升', '平稳', '下降'].map(v => ({ label: v, value: v }))
 
 function urgencyLabel(u) {
@@ -411,16 +412,23 @@ function openHotspotForm() { showHotspotForm.value = true }
 function openTodoForm() { showTodoForm.value = true }
 
 async function saveHotspot() {
-  const title = hsTitle.value.trim(); if (!title) return showToast('请输入标题', true)
+  const title = hsTitle.value.trim()
+  if (!title) return showToast('请输入热点标题', true)
+  if (!hsPlatform.value) return showToast('请选择发布平台', true)
+  if (!hsSource.value) return showToast('请选择信息来源', true)
+  if (!hsCategory.value) return showToast('请选择热点类型', true)
+  if (!hsValid.value) return showToast('请选择预计有效期', true)
+  if (!/^https?:\/\//i.test(String(hsUrl.value || '').trim())) return showToast('请填写以 http:// 或 https:// 开头的原内容链接', true)
+  if (!String(hsDesc.value || '').trim()) return showToast('请填写内容描述', true)
   savingHotspot.value = true
   try {
   await apiPost('/hotspots', {
     title, source_label: hsSource.value, platform: hsPlatform.value, category: hsCategory.value,
     heat: +hsHeat.value || 0, trend: hsTrend.value, valid_until: hsValid.value,
-    url: hsUrl.value, tags: hsTags.value, description: hsDesc.value, risk_note: hsRisk.value,
+    url: hsUrl.value.trim(), tags: hsTags.value.trim(), description: hsDesc.value.trim(), risk_note: hsRisk.value.trim(),
     source: '手动录入', created_by: user.value
   })
-  hsTitle.value = ''; hsUrl.value = ''; hsTags.value = ''; hsDesc.value = ''; hsRisk.value = ''
+  hsTitle.value = ''; hsUrl.value = ''; hsTags.value = ''; hsDesc.value = ''; hsRisk.value = ''; hsValid.value = ''
   showHotspotForm.value = false; showToast('已录入'); load()
   } catch (e) { showToast(e.message, true) }
   finally { savingHotspot.value = false }

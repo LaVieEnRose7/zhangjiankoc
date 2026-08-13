@@ -49,7 +49,7 @@
       <template #head><h3>新增营销任务阶段</h3></template>
       <div class="hint" style="margin-bottom:14px">用于补录第十五期、第十六期等历史阶段。结束日期无需填写。</div>
       <div class="form-row"><label>阶段名称 *</label><n-input v-model:value="phaseForm.name" placeholder="例如：第十五期" /></div>
-      <div class="form-row"><label>开始日期 *</label><n-input v-model:value="phaseForm.start_date" type="date" /></div>
+      <div class="form-row"><label>开始日期 *</label><input v-model="phaseForm.start_date" class="form-date-input" type="date" /></div>
       <template #foot>
         <n-button type="primary" :loading="savingPhase" @click="savePhase">{{ savingPhase ? '保存中...' : '保存阶段' }}</n-button>
       </template>
@@ -98,26 +98,30 @@
 
     <Modal :show="showForm" @close="showForm = false" wide>
       <template #head><h3>{{ editing ? '编辑' : '添加' }}创作者</h3></template>
-      <div class="form-grid">
-        <div class="form-row full"><label>名称 *</label><n-input v-model:value="form.name" /></div>
+      <div class="modal-form-section"><h4>作者基础信息</h4><div class="form-grid">
+        <div class="form-row full"><label>作者名称 *</label><n-input v-model:value="form.name" placeholder="填写常用作者名称" /></div>
+        <div class="form-row full"><label>擅长方向 / 标签</label><n-input v-model:value="form.categories" placeholder="例如：手游攻略、角色养成、剧情整活；多个标签用逗号分隔" /></div>
+      </div></div>
+      <div class="modal-form-section"><h4>主平台账号</h4><div class="form-grid">
         <div class="form-row">
-          <label for="creator-platform">主平台</label>
-          <select id="creator-platform" v-model="form.platform" class="creator-platform-select">
+          <label for="creator-platform">主平台 *</label>
+          <select id="creator-platform" v-model="form.platform" class="form-select-input">
             <option v-for="option in platformOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
         </div>
         <div class="form-row"><label>主平台粉丝量（可手动填写）</label><n-input-number v-model:value="form.fans" :min="0" :show-button="false" style="width:100%" placeholder="抓取失败时可手动填写" /></div>
-        <div class="form-row"><label>均播放量（案例自动统计）</label><n-input-number v-model:value="form.avg_play" :min="0" :show-button="false" readonly style="width:100%" placeholder="导入案例后自动计算" /></div>
-        <div class="form-row full"><label>擅长方向/标签</label><n-input v-model:value="form.categories" placeholder="逗号分隔" /></div>
         <div class="form-row full">
-          <label>主平台主页链接</label>
+          <label>主平台主页链接 *</label>
           <div style="display:flex;gap:8px">
             <n-input v-model:value="form.home_url" placeholder="支持 B站、抖音创作者主页" @keyup.enter="fetchProfile" />
             <n-button secondary :loading="fetchingProfile" :disabled="!form.home_url" @click="fetchProfile">{{ fetchingProfile ? '获取中...' : '获取粉丝' }}</n-button>
           </div>
           <div class="hint" style="margin-top:6px">实时获取失败时会保留当前手动填写的粉丝数。</div>
         </div>
-        <div class="form-row"><label>分发平台</label><n-select v-model:value="form.dist_platform" :options="platformOptions" clearable placeholder="可选" /></div>
+        <div class="form-row full computed-field-note"><b>均播放量</b><span>保存作者后，系统会根据案例库中的发布内容自动统计，无需手动填写。</span></div>
+      </div></div>
+      <div class="modal-form-section"><h4>分发平台账号 <span>选填</span></h4><div class="form-grid">
+        <div class="form-row"><label>分发平台</label><select v-model="form.dist_platform" class="form-select-input"><option value="">不设置分发平台</option><option v-for="option in platformOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
         <div class="form-row"><label>分发平台名称</label><n-input v-model:value="form.dist_nickname" placeholder="分发账号昵称" /></div>
         <div class="form-row"><label>分发平台粉丝量（可手动填写）</label><n-input-number v-model:value="form.dist_fans" :min="0" :show-button="false" style="width:100%" /></div>
         <div class="form-row full">
@@ -127,7 +131,7 @@
             <n-button secondary :loading="fetchingDistProfile" :disabled="!form.dist_home_url" @click="fetchDistributionProfile">{{ fetchingDistProfile ? '获取中...' : '获取粉丝' }}</n-button>
           </div>
         </div>
-      </div>
+      </div></div>
       <template #foot><n-button type="primary" :loading="saving" @click="save">{{ saving ? '保存中...' : '保存' }}</n-button></template>
     </Modal>
 
@@ -657,6 +661,9 @@ async function fixCaseLinks() {
 }
 async function save() {
   if (!form.value.name.trim()) return showToast('请输入名称', true)
+  if (!form.value.platform) return showToast('请选择主平台', true)
+  if (!/^https?:\/\//i.test(String(form.value.home_url || '').trim())) return showToast('请填写以 http:// 或 https:// 开头的主平台主页链接', true)
+  if (form.value.dist_platform && !/^https?:\/\//i.test(String(form.value.dist_home_url || '').trim())) return showToast('设置分发平台后，请填写有效的分发主页链接', true)
   saving.value = true
   try {
     let creatorId

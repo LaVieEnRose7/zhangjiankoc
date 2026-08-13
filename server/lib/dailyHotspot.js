@@ -35,6 +35,25 @@ const SOFT_EXCLUDE = ['新闻', '时政', '政治', '政策', '主席', '总理'
 // 强无关词：即使有兴趣命中也排除（硬新闻/时政/社会事件）
 const HARD_EXCLUDE = ['时政', '政治', '主席', '总理', '书记', '地震', '台风', '洪水', '疫情', '确诊', '股票', '股市', '证券', '军事', '战争', '导弹', '制裁', '冲突', '演习', '事故', '遇难', '去世', '讣告', '逮捕', '起诉', '判决', '勒索', '诈骗'];
 const GENERIC_CASE_WORDS = new Set(['游戏', '手游', '端游', '直播', '剧情', '角色', '活动', '挑战', '搞笑', '整活', '测评', '攻略', '视频']);
+// 热点池只服务手游营销。游戏分区内的端游、主机和泛游戏内容不能仅因“属于游戏区”就进入。
+const MOBILE_SIGNALS = ['手游', '手机游戏', '移动游戏', '移动端', '安卓', 'android', 'ios'];
+const MOBILE_SUPPORT_SIGNALS = ['抽卡', '卡池', '公测', '开服', '新服', '预约', '版本更新'];
+const MOBILE_GAME_NAMES = ['原神', '崩坏', '星穹铁道', '绝区零', '鸣潮', '王者荣耀', '和平精英', '明日方舟', '第五人格', '火影忍者手游', '英雄联盟手游', '金铲铲', '逆水寒手游', '梦幻西游手游', '蛋仔派对', '恋与深空', '燕云十六声手游'];
+const ZHANGJIAN_SIGNALS = ['杖剑传说', '杖剑', '放置冒险', '放置养成', '奇幻冒险', '剑与魔法', '职业养成', '转职', '副本攻略', '秘境', '坐骑', '公会', '多人组队', '角色养成'];
+const NON_MOBILE_SIGNALS = ['steam', '主机', 'ps5', 'ps4', 'xbox', 'switch', '单机', '端游', 'pc版', 'pc游戏', '独立游戏', '3a大作'];
+
+function mobileGameScore(title) {
+  const text = String(title || '').toLowerCase();
+  const mobileHits = MOBILE_SIGNALS.filter(word => text.includes(word)).length;
+  const supportHits = MOBILE_SUPPORT_SIGNALS.filter(word => text.includes(word)).length;
+  const knownGameHits = MOBILE_GAME_NAMES.filter(word => text.includes(word)).length;
+  const zhangjianHits = ZHANGJIAN_SIGNALS.filter(word => text.includes(word)).length;
+  const nonMobileHits = NON_MOBILE_SIGNALS.filter(word => text.includes(word)).length;
+  // 明确为手游或杖剑相关题材时允许跨端内容；否则端游/主机信号直接排除。
+  if (nonMobileHits && !mobileHits && !zhangjianHits) return -1;
+  if (!mobileHits && !knownGameHits && !zhangjianHits) return 0;
+  return mobileHits * 5 + knownGameHits * 5 + zhangjianHits * 4 + supportHits - nonMobileHits * 2;
+}
 
 function relevanceScore(title) {
   if (!title) return 0;
@@ -60,8 +79,9 @@ function filterRelevant(list, db = null) {
       play: Number(row.play_count) || 0
     })) : [];
   for (const h of (list || [])) {
-    // 垂类游戏榜内容天然具备游戏相关性；综合榜仍需关键词验证。
-    const s = h.gameVertical ? Math.max(6, relevanceScore(h.title)) : relevanceScore(h.title);
+    const mobileScore = mobileGameScore(h.title);
+    if (mobileScore <= 0) continue;
+    const s = Math.max(relevanceScore(h.title), mobileScore);
     if (s > 0) {
       const title = String(h.title || '').toLowerCase();
       const words = INTERESTS.filter(item => item.w >= 2 && title.includes(item.k) && !GENERIC_CASE_WORDS.has(item.k)).map(item => item.k);
@@ -146,4 +166,4 @@ function getSnapshot(db, { force } = {}) {
   return inFlight;
 }
 
-module.exports = { getSnapshot, generate, ensure, dateOnly, filterRelevant, relevanceScore };
+module.exports = { getSnapshot, generate, ensure, dateOnly, filterRelevant, relevanceScore, mobileGameScore };

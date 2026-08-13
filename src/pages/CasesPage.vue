@@ -142,20 +142,22 @@
 
     <Modal :show="showForm" @close="showForm = false" wide>
       <template #head><h3>{{ editing ? '编辑' : '新增' }}案例</h3></template>
-      <div class="form-grid">
-        <div class="form-row full"><label>标题 *</label><n-input v-model:value="form.title" /></div>
-        <div class="form-row"><label>平台</label><n-select v-model:value="form.platform" :options="platformOptions" /></div>
-        <div class="form-row"><label>创作者</label><n-input v-model:value="form.creator_name" /></div>
-        <div class="form-row full"><label>链接</label><n-input v-model:value="form.url" /></div>
-        <div class="form-row"><label>发布日期</label><n-input v-model:value="form.publish_date" type="date" /></div>
-        <div class="form-row"><label>内容形式</label><n-input v-model:value="form.content_type" /></div>
+      <div class="modal-form-section"><h4>基础信息</h4><div class="form-grid">
+        <div class="form-row full"><label>内容标题 *</label><n-input v-model:value="form.title" placeholder="填写视频或图文标题" /></div>
+        <div class="form-row"><label>发布平台 *</label><select v-model="form.platform" class="form-select-input"><option v-for="option in platformOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
+        <div class="form-row"><label>创作者名称 *</label><n-input v-model:value="form.creator_name" placeholder="填写该平台账号名称" /></div>
+        <div class="form-row full"><label>原内容链接 *</label><n-input v-model:value="form.url" placeholder="填写可直接打开的视频或图文链接" /></div>
+        <div class="form-row"><label>发布日期 *</label><input v-model="form.publish_date" class="form-date-input" type="date" /></div>
+        <div class="form-row"><label>内容形式</label><n-input v-model:value="form.content_type" placeholder="例如：攻略、测评、整活、剧情" /></div>
+      </div></div>
+      <div class="modal-form-section"><h4>发布数据</h4><div class="form-grid">
         <div class="form-row"><label>播放量</label><n-input-number v-model:value="form.play_count" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>点赞</label><n-input-number v-model:value="form.like_count" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>评论</label><n-input-number v-model:value="form.comment_count" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>收藏</label><n-input-number v-model:value="form.favorite_count" :min="0" style="width:100%" /></div>
         <div class="form-row"><label>分享</label><n-input-number v-model:value="form.share_count" :min="0" style="width:100%" /></div>
-        <div class="form-row full"><label>总结</label><n-input v-model:value="form.summary" type="textarea" /></div>
-      </div>
+      </div></div>
+      <div class="modal-form-section"><h4>内容总结</h4><div class="form-row"><label>案例总结</label><n-input v-model:value="form.summary" type="textarea" placeholder="记录内容亮点、可复用玩法及需要注意的问题" /></div></div>
       <template #foot><n-button type="primary" :loading="saving" @click="saveCase">{{ saving ? '保存中...' : '保存' }}</n-button></template>
     </Modal>
 
@@ -383,7 +385,11 @@ function closeDetail() {
 }
 function openLink(url) { if (url) window.open(url, '_blank') }
 async function saveCase() {
-  if (!form.value.title.trim()) return showToast('请输入标题', true)
+  if (!form.value.title.trim()) return showToast('请输入内容标题', true)
+  if (!form.value.platform) return showToast('请选择发布平台', true)
+  if (!String(form.value.creator_name || '').trim()) return showToast('请输入创作者名称', true)
+  if (!/^https?:\/\//i.test(String(form.value.url || '').trim())) return showToast('请填写以 http:// 或 https:// 开头的原内容链接', true)
+  if (!form.value.publish_date) return showToast('请选择发布日期', true)
   saving.value = true
   try {
     if (editing.value) await apiPut(`/cases/${editing.value.id}`, form.value)
